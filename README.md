@@ -27,15 +27,13 @@
 
 ---
 
-## Watch the 1-minute overview
+## See it in action
 
-<!-- To get an inline player: edit this README on GitHub, drag docs/media/ReviewNudge-overview.mp4 into the editor,
-     and replace the linked image below with the video link GitHub creates. -->
-<a href="docs/media/ReviewNudge-overview.mp4">
-  <img src="docs/images/video-poster.png" alt="Play the ReviewNudge overview video" width="100%">
-</a>
+<img src="docs/images/demo.gif" alt="ReviewNudge checking returns, sending review requests one at a time, moving to page 2 and showing a summary" width="100%">
 
-<sub>All orders, products and returns in the video and screenshots are made up. Music: "Rose Water" by massobeats.</sub>
+▶️ **[Download the full 1-minute overview with sound (MP4, 5 MB)](https://github.com/Golps/ReviewNudge/raw/main/docs/media/ReviewNudge-overview.mp4)**
+
+<sub>All orders, products and returns shown are made up. Music: "Rose Water" by massobeats.</sub>
 
 ## Why ReviewNudge exists
 
