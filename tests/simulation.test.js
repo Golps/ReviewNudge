@@ -96,13 +96,19 @@ class Site {
       html: '<nav>Orders › Manage returns › Manage FBA returns</nav><h1>FBA Returns</h1><div id="fba"></div>',
       script: (w, env) => {
         let days = 30;
+        let byAuth = false;
         const draw = () => {
-          const list = (site.fbaReturns || []).filter((r) => r.days <= days);
+          // Refund-date filter hides returns not refunded yet; authorized-date filter shows them.
+          const list = (site.fbaReturns || []).filter((r) => r.days <= days && (byAuth || r.refunded !== false));
+          const auth = site.fbaAuthFilter ? `<select id="basis"><option value="ref">Customer refunded date</option><option value="auth" ${byAuth ? 'selected' : ''}>Return authorized date</option></select>` : '';
           w.document.getElementById('fba').innerHTML =
-            `<div><label><input type="radio" name="d" ${days === 30 ? 'checked' : ''}>Last 30 days</label><label id="d90"><input type="radio" name="d" ${days === 90 ? 'checked' : ''}>Last 90 days</label></div>` +
+            `<div>${auth}<label><input type="radio" name="d" ${days === 30 ? 'checked' : ''}>Last 30 days</label><label id="d90"><input type="radio" name="d" ${days === 90 ? 'checked' : ''}>Last 90 days</label><label id="d365"><input type="radio" name="d" ${days === 365 ? 'checked' : ''}>Last year</label></div>` +
             `<span>${list.length} items</span><table><tr><th>Order ID</th><th>Customer refunded date</th><th>Disposition</th></tr>` +
             list.map((r) => `<tr><td><a href="#">${r.id}</a></td><td>${r.days} days ago</td><td>SELLABLE</td></tr>`).join('') + '</table>';
-          w.document.querySelector('#d90 input').addEventListener('click', () => { days = 90; env.fba90 = true; setTimeout(draw, 20); });
+          w.document.querySelector('#d90 input').addEventListener('click', () => { days = 90; setTimeout(draw, 20); });
+          w.document.querySelector('#d365 input').addEventListener('click', () => { days = 365; env.fbaWide = true; setTimeout(draw, 20); });
+          const basis = w.document.getElementById('basis');
+          if (basis) basis.addEventListener('change', () => { byAuth = basis.value === 'auth'; env.fbaAuth = byAuth; setTimeout(draw, 20); });
         };
         draw();
       },
@@ -972,7 +978,18 @@ async function main() {
     const env = new Env(site, { store: S4() });
     const w = await ready(env, env.openList(), 2);
     const end = await sendAll(w);
-    check(`F ${via}: FBA return found (90-day filter) and skipped; others sent`, env.fba90 && st(env, id(352)).status === 'skippedReturn' && !(env.posts || {})[id(352)] && st(env, id(351)).status === 'sent' && !/couldn't be read/.test(end), end);
+    check(`F ${via}: FBA return found (widest date range) and skipped; others sent`, env.fbaWide && st(env, id(352)).status === 'skippedReturn' && !(env.posts || {})[id(352)] && st(env, id(351)).status === 'sent' && !/couldn't be read/.test(end), end);
+  }
+  {
+    // Return authorized but not refunded yet: found when the page can filter by authorized date.
+    const site = new Site({ [id(356)]: { age: 12, amazon: 'eligible' }, [id(357)]: { age: 12, amazon: 'eligible' } });
+    site.fbaVia = 'link';
+    site.fbaAuthFilter = true;
+    site.fbaReturns = [{ id: id(357), days: 3, refunded: false }];
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 2);
+    await sendAll(w);
+    check('F authorized-date filter used when offered → unrefunded FBA return skipped', env.fbaAuth && st(env, id(357)).status === 'skippedReturn' && st(env, id(356)).status === 'sent');
   }
   {
     const site = new Site({ [id(355)]: { age: 12, amazon: 'eligible' } });

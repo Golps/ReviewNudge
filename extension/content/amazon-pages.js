@@ -344,7 +344,10 @@
   const FBA_ENTRY = /^(?:view |manage )?fba returns$|^fulfilled by amazon$|^amazon fulfilled$|^fba$/i;
   const SELLER_FULFILLED_MENU = /^seller fulfilled$/i;
   const FBA_PAGE = /Manage FBA returns|Customer refunded date|Unit received date/i; // only on the FBA returns page
-  const FBA_RANGE = /^last 90 days$/i;
+  // FBA date filters, best first: the widest range on the page's date filter
+  // (Amazon's FBA list is filtered by refund date; widest = fewest missed).
+  const FBA_RANGES = [/^last year$/i, /^last 365 days$/i, /^last 180 days$/i, /^last 90 days$/i];
+  const AUTHORIZED_FILTER = /return authori[sz]ed date/i;
 
   function readReturnsPage(doc) {
     const text = pageText(doc, false);
@@ -472,8 +475,16 @@
       if (Date.now() - start > RETURNS_LOAD_MS) return { ok: false, why: "the FBA returns page didn't load" };
       await sleep(POLL_MS);
     }
-    // Widen the date filter to the last 90 days, if it offers that.
-    const range = deepAll(io.doc(), 'label, [role="radio"], kat-radiobutton').find((e) => !inOurUi(e) && FBA_RANGE.test(labelOf(e)));
+    // If the page can filter by *return authorized* date, use that (it lists a
+    // return from the day it's authorized, before any refund).
+    await useAuthorizedDateFilter(io);
+    // Then widen the date range as far as the page allows.
+    const choices = deepAll(io.doc(), 'label, [role="radio"], kat-radiobutton').filter((e) => !inOurUi(e));
+    let range = null;
+    for (const re of FBA_RANGES) {
+      range = choices.find((e) => re.test(labelOf(e)));
+      if (range) break;
+    }
     if (range) {
       const input = range.querySelector && range.querySelector('input');
       const checked = (input && input.checked) || range.getAttribute('aria-checked') === 'true' || range.hasAttribute('checked');
@@ -484,6 +495,32 @@
       }
     }
     return readReturns(io);
+  }
+
+  // Switches the FBA list's date filter to "Return authorized date" when Amazon
+  // offers that choice (a <select> or radio/option labelled that way).
+  async function useAuthorizedDateFilter(io) {
+    const doc = io.doc();
+    for (const sel of deepAll(doc, 'select')) {
+      const opt = [...sel.options].find((o) => AUTHORIZED_FILTER.test(o.text));
+      if (opt && sel.value !== opt.value && !inOurUi(sel)) {
+        const Ev = (sel.ownerDocument.defaultView || window).Event;
+        const before = readReturnsPage(doc).sig;
+        sel.value = opt.value;
+        sel.dispatchEvent(new Ev('change', { bubbles: true }));
+        await stableReturns(io, before, RETURNS_PAGE_MS);
+        return true;
+      }
+    }
+    const choice = deepAll(doc, 'label, [role="radio"], [role="option"], kat-radiobutton, kat-option')
+      .find((e) => !inOurUi(e) && AUTHORIZED_FILTER.test(labelOf(e)) && !e.closest('th, thead, [role="columnheader"]') && isVisible(e));
+    if (!choice) return false;
+    const input = choice.querySelector && choice.querySelector('input');
+    if ((input && input.checked) || choice.getAttribute('aria-checked') === 'true' || choice.getAttribute('aria-selected') === 'true') return true;
+    const before = readReturnsPage(doc).sig;
+    clickEl(input || choice);
+    await stableReturns(io, before, RETURNS_PAGE_MS);
+    return true;
   }
 
   // Shared with orders-page.js (same extension world).

@@ -224,7 +224,7 @@ Skipping returns is best effort. If Manage Returns can't be read, ReviewNudge st
 <details>
 <summary><b>Does it check FBA returns?</b></summary>
 
-Yes. After the seller-fulfilled list, ReviewNudge opens **Manage FBA returns** (one click away in Manage Returns), sets it to the last 90 days and skips every order on it. Amazon lists an FBA return there once the buyer has been refunded, so an FBA return that's only just been requested may not show yet. The orders page's "Refunded" label is checked for every order too.
+Yes. After the seller-fulfilled list, ReviewNudge opens **Manage FBA returns** (one click away in Manage Returns) and skips every order on it. If the page lets it filter by **return authorized date**, it uses that, so a return counts from the day it's authorized. Otherwise it uses the widest date range on offer (up to the last year). Amazon's default FBA filter is by refund date, so in that case a return that's authorized but not yet refunded may not show. The orders page's "Refunded" label is checked for every order too.
 </details>
 
 <details>

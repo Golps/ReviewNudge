@@ -2,7 +2,7 @@
 
 ## 0.8.1
 
-- **FBA returns are now skipped too.** After the seller-fulfilled list, ReviewNudge reads Manage FBA returns (last 90 days).
+- **FBA returns are now skipped too.** After the seller-fulfilled list, ReviewNudge reads Manage FBA returns, by return authorized date when the page offers it, otherwise over the widest date range.
 - A CAPTCHA or sign-in page while reading returns stops the run instead of continuing.
 - The Mexico marketplace is included in the returns check.
 
