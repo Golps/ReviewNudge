@@ -786,7 +786,19 @@
           globalThis.__nudgeReadReturns(io),
           sleep(RETURNS_READ_TIMEOUT_MS).then(() => ({ ok: false, why: 'the returns list took too long' })),
         ]);
-        if (r.ok || r.blocked) return r; // a CAPTCHA or sign-in page: don't try again elsewhere
+        if (r.blocked) return r; // a CAPTCHA or sign-in page: don't try again elsewhere
+        if (r.ok) {
+          // FBA returns live on their own page, one click away. Best effort, and
+          // silent when the account has no FBA returns page.
+          const fba = await Promise.race([
+            globalThis.__nudgeReadFbaReturns(io),
+            sleep(RETURNS_READ_TIMEOUT_MS).then(() => ({ ok: false, why: 'the FBA returns list took too long' })),
+          ]).catch((e) => ({ ok: false, why: e && e.message }));
+          if (fba.blocked) return fba;
+          if (fba.ok) r.ids = r.ids.concat(fba.ids);
+          r.fba = fba.ok ? 'read' : fba.missing ? 'none' : 'failed';
+          return r;
+        }
         whys.push(r.why);
       } catch (e) {
         whys.push(`unexpected problem: ${e && e.message}`);

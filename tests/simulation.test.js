@@ -78,7 +78,35 @@ class Site {
     if (this.returnsLayout === 'login') return { html: '<h1>Sign in</h1><input type="password">' };
     if (this.returnsLayout !== 'new') return { html: '<h1>Something went wrong</h1>' };
     const rows = this.returns.map((id) => `<tr><td>US</td><td><a href="#">${id}</a><br>Pat</td><td><span>Pending refund</span></td></tr>`).join('');
-    return { html: `<h1>Manage returns <span>(${this.returns.length})</span></h1><table>${rows}</table>` };
+    const fbaLink = this.fbaVia === 'link' ? '<a href="/manage/returns/afn">View FBA Returns</a>' : '';
+    const fbaMenu = this.fbaVia === 'menu' ? '<button id="ful">Seller fulfilled</button><div id="fulmenu" hidden><button id="afn">Fulfilled by Amazon</button></div>' : '';
+    return {
+      html: `${fbaMenu}<h1>Manage returns <span>(${this.returns.length})</span></h1>${fbaLink}<table>${rows}</table>`,
+      script: (w) => {
+        const b = w.document.getElementById('ful');
+        if (!b) return;
+        b.addEventListener('click', () => (w.document.getElementById('fulmenu').hidden = false));
+        w.document.getElementById('afn').addEventListener('click', () => w.__nav('/manage/returns/afn'));
+      },
+    };
+  }
+  fbaPage() {
+    const site = this;
+    return {
+      html: '<nav>Orders › Manage returns › Manage FBA returns</nav><h1>FBA Returns</h1><div id="fba"></div>',
+      script: (w, env) => {
+        let days = 30;
+        const draw = () => {
+          const list = (site.fbaReturns || []).filter((r) => r.days <= days);
+          w.document.getElementById('fba').innerHTML =
+            `<div><label><input type="radio" name="d" ${days === 30 ? 'checked' : ''}>Last 30 days</label><label id="d90"><input type="radio" name="d" ${days === 90 ? 'checked' : ''}>Last 90 days</label></div>` +
+            `<span>${list.length} items</span><table><tr><th>Order ID</th><th>Customer refunded date</th><th>Disposition</th></tr>` +
+            list.map((r) => `<tr><td><a href="#">${r.id}</a></td><td>${r.days} days ago</td><td>SELLABLE</td></tr>`).join('') + '</table>';
+          w.document.querySelector('#d90 input').addEventListener('click', () => { days = 90; env.fba90 = true; setTimeout(draw, 20); });
+        };
+        draw();
+      },
+    };
   }
   classicReturns() {
     if (this.returnsLayout === 'down') return { html: '<h1>Something went wrong</h1>' };
@@ -122,6 +150,7 @@ class Site {
       this.menuHit = true;
       return { html: `<h1>Manage returns <span>(${this.returns.length})</span></h1><table>${this.returns.map((i) => `<tr><td><a href="#">${i}</a></td></tr>`).join('')}</table>` };
     }
+    if (u.pathname === '/manage/returns/afn') return this.fbaPage();
     if (u.pathname.startsWith('/manage/returns')) return this.newReturns();
     if (u.pathname.startsWith('/gp/returns/list')) return this.classicReturns();
     if (u.pathname.startsWith('/orders-v3')) return this.listPage();
@@ -933,6 +962,24 @@ async function main() {
     const w = await ready(env, env.openList(), 2);
     await sendAll(w);
     check('R4 menu link to Manage Returns used; return skipped', site.menuHit && st(env, id(332)).status === 'skippedReturn' && st(env, id(331)).status === 'sent');
+  }
+
+  // F1–F3: FBA returns (their own page, one click from Manage Returns)
+  for (const via of ['link', 'menu']) {
+    const site = new Site({ [id(351)]: { age: 12, amazon: 'eligible' }, [id(352)]: { age: 14, amazon: 'eligible' } });
+    site.fbaVia = via;
+    site.fbaReturns = [{ id: id(352), days: 45 }]; // only shows with the 90-day filter
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 2);
+    const end = await sendAll(w);
+    check(`F ${via}: FBA return found (90-day filter) and skipped; others sent`, env.fba90 && st(env, id(352)).status === 'skippedReturn' && !(env.posts || {})[id(352)] && st(env, id(351)).status === 'sent' && !/couldn't be read/.test(end), end);
+  }
+  {
+    const site = new Site({ [id(355)]: { age: 12, amazon: 'eligible' } });
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    const end = await sendAll(w);
+    check('F no FBA returns page on the account → nothing extra, no warning', st(env, id(355)).status === 'sent' && /^Done\. Sent 1\.$/.test(end), end);
   }
 
   // R3: list can't be fully read → nothing sent at all

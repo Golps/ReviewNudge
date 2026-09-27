@@ -22,7 +22,7 @@ That's all. ReviewNudge doesn't ask for your tabs, history, downloads, cookies o
 
 Only to `sellercentral.amazon.com`, as you:
 
-1. **Manage Returns**, opened in an invisible frame inside your orders page, to see which orders have a return.
+1. **Manage Returns** and **Manage FBA returns**, opened in an invisible frame inside your orders page, to see which orders have a return.
 2. **Amazon's review request for an eligible order.** This is the same request Amazon's *Request a Review → Yes* button sends: the order number, the marketplace, and an empty message body.
 3. **Amazon's own order and Request a Review pages**, only if the request above doesn't go through. ReviewNudge then clicks **Yes** on Amazon's page, just like you would.
 4. **Amazon's Next button** on Manage Orders, to go to the next page of orders.

@@ -1,6 +1,6 @@
 {
   "name": "reviewnudge",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Development tools for ReviewNudge. The extension itself (in extension/) has no dependencies.",
   "license": "MIT",

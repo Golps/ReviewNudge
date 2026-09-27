@@ -339,7 +339,12 @@
   const RETURNS_TOTAL = [
     /Total Returns:?\s*(?:\|\s*)?([\d,]+)/i, // classic
     /Manage returns\s*(?:\|\s*)?\(\s*([\d,]+)\s*\)/i, // new
+    /(?:^|\|)\s*([\d,]+)\s+items?\s*(?:\||$)/i, // FBA returns ("12 items")
   ];
+  const FBA_ENTRY = /^(?:view |manage )?fba returns$|^fulfilled by amazon$|^amazon fulfilled$|^fba$/i;
+  const SELLER_FULFILLED_MENU = /^seller fulfilled$/i;
+  const FBA_PAGE = /Manage FBA returns|Customer refunded date|Unit received date/i; // only on the FBA returns page
+  const FBA_RANGE = /^last 90 days$/i;
 
   function readReturnsPage(doc) {
     const text = pageText(doc, false);
@@ -419,8 +424,71 @@
     return { ok: false, why: 'too many pages of returns' };
   }
 
+  // From a (seller-fulfilled) Manage Returns page, open the FBA returns list and
+  // read it too. { ok, ids } · { ok: false, missing: true } when this account
+  // shows no FBA returns page · { ok: false, why, blocked? }.
+  async function readFbaReturns(io) {
+    const find = () =>
+      deepAll(io.doc(), `${CLICKABLE}, [role="option"], kat-option`).find((e) => !inOurUi(e) && FBA_ENTRY.test(labelOf(e)) && isVisible(e)) || null;
+    // A plain <select> switch between seller-fulfilled and FBA.
+    for (const sel of deepAll(io.doc(), 'select')) {
+      const opt = [...sel.options].find((o) => FBA_ENTRY.test(o.text.trim()));
+      if (opt && !inOurUi(sel)) {
+        const Ev = (sel.ownerDocument.defaultView || window).Event;
+        sel.value = opt.value;
+        sel.dispatchEvent(new Ev('change', { bubbles: true }));
+        break;
+      }
+    }
+    let entry = FBA_PAGE.test(pageText(io.doc(), false)) ? null : find();
+    if (!entry) {
+      const menu = findButton(io.doc(), SELLER_FULFILLED_MENU); // new layout: a "Seller fulfilled ▾" switch
+      if (menu) {
+        clickEl(menu);
+        await sleep(POLL_MS * 2);
+        entry = find();
+      }
+    }
+    if (!entry) {
+      await sleep(POLL_MS * 2);
+      if (!FBA_PAGE.test(pageText(io.doc(), false))) return { ok: false, missing: true };
+    }
+    const href = entry && sameOriginHref(entry, io.url());
+    if (!entry) {
+      /* already switched by the <select> above */
+    } else if (href) {
+      if ((await io.navigate(href)) === 'blocked') return { ok: false, why: "the FBA returns page couldn't be opened" };
+    } else {
+      clickEl(entry);
+    }
+    // Wait for the FBA page itself.
+    const start = Date.now();
+    for (;;) {
+      const doc = io.doc();
+      const text = doc && doc.body ? pageText(doc, false) : '';
+      const block = doc && doc.body ? blocker(doc, io.url(), text) : null;
+      if (block) return { ok: false, why: block, blocked: true };
+      if (FBA_PAGE.test(text)) break;
+      if (Date.now() - start > RETURNS_LOAD_MS) return { ok: false, why: "the FBA returns page didn't load" };
+      await sleep(POLL_MS);
+    }
+    // Widen the date filter to the last 90 days, if it offers that.
+    const range = deepAll(io.doc(), 'label, [role="radio"], kat-radiobutton').find((e) => !inOurUi(e) && FBA_RANGE.test(labelOf(e)));
+    if (range) {
+      const input = range.querySelector && range.querySelector('input');
+      const checked = (input && input.checked) || range.getAttribute('aria-checked') === 'true' || range.hasAttribute('checked');
+      if (!checked) {
+        const before = readReturnsPage(io.doc()).sig;
+        clickEl(input || range);
+        await stableReturns(io, before, RETURNS_PAGE_MS); // new results, or the same if nothing changed
+      }
+    }
+    return readReturns(io);
+  }
+
   // Shared with orders-page.js (same extension world).
   globalThis.__nudgeReadReturns = readReturns;
+  globalThis.__nudgeReadFbaReturns = readFbaReturns;
   globalThis.__nudgeDrive = drive;
   globalThis.__nudgeFindReturn = (text) => {
     const r = findReturn(text);

@@ -70,7 +70,9 @@ A buyer in the middle of a return or refund has no reason to get a review reques
 1. **Manage Returns (seller-fulfilled)**, every status, last 90 days. It uses Seller Central's own *Manage Returns* menu link when the page has one, and otherwise the new and classic Manage Returns pages. It reads the page's own total (for example *Total Returns: 23*), sets the list to its largest page size, and clicks **Next** until it has read that many rows. Any order number on the list is skipped: requested, pending, approved, completed, anything.
 2. **The orders page itself**: a *Refunded* (or similar) label in an order's row. Phrases like *No refunds issued* are recognized as negations, and buttons such as *Refund order* are ignored.
 
-The list is re-read every 15 minutes during long runs.
+3. **Manage FBA returns**: right after the seller-fulfilled list, ReviewNudge follows Seller Central's own link or *Seller fulfilled ▾* switch to the FBA returns page, selects *Last 90 days*, and reads it the same way (its total is shown as *N items*). Amazon lists an FBA return there once the buyer has been refunded. Accounts without an FBA returns page are skipped silently.
+
+The lists are re-read every 15 minutes during long runs.
 
 **Best effort by design.** If Manage Returns can't be read in full, ReviewNudge doesn't guess. It keeps sending, still skips orders the orders page marks as refunded, and adds a line to the summary: *Manage Returns couldn't be read, so only returns shown on the orders page were skipped.* A CAPTCHA or sign-in page is different: see [When it stops](#when-it-stops).
 

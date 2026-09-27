@@ -1,7 +1,3 @@
-
-
-https://github.com/user-attachments/assets/3f7e35fd-601d-4a0a-9d73-c98cd373a144
-
 <p align="center">
   <img src="docs/images/banner.png" alt="ReviewNudge: ask every eligible buyer for a review in one click" width="100%">
 </p>
@@ -23,6 +19,7 @@ https://github.com/user-attachments/assets/3f7e35fd-601d-4a0a-9d73-c98cd373a144
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#watch-the-1-minute-overview">Video</a> ·
   <a href="#privacy-and-safety">Privacy</a> ·
   <a href="#how-reviewnudge-is-different">How it's different</a> ·
   <a href="docs/HOW-IT-WORKS.md">Under the hood</a> ·
@@ -35,9 +32,7 @@ https://github.com/user-attachments/assets/3f7e35fd-601d-4a0a-9d73-c98cd373a144
 
 <img src="docs/images/demo.gif" alt="ReviewNudge checking returns, sending review requests one at a time, moving to page 2 and showing a summary" width="100%">
 
-▶️ **[Download the full 1-minute overview with sound (MP4, 5 MB)](https://github.com/Golps/ReviewNudge/raw/main/docs/media/ReviewNudge-overview.mp4)**
-
-<sub>All orders, products and returns shown are made up. Music: "Rose Water" by massobeats.</sub>
+<sub>All orders, products and returns shown are made up. The full overview with sound is <a href="#watch-the-1-minute-overview">below</a>.</sub>
 
 ## Why ReviewNudge exists
 
@@ -52,7 +47,7 @@ Most review tools ask you to connect your seller account to their servers, pay a
 | **One button** | Adds **Request Reviews** to Amazon's own toolbar on Manage Orders. One click handles every eligible order. |
 | **Amazon's own request** | Sends exactly what Amazon's *Request a Review → Yes* sends. No custom messages, no emails, no templates. |
 | **The 5–30 day window** | Amazon only allows requests 5 to 30 days after delivery. Each order shows when its window opens, and orders are picked up once they're ready. |
-| **Skips returns and refunds** | Checks your **Manage Returns** list and the orders page first. Orders with a return (requested, pending, approved or completed) or a refund are skipped. |
+| **Skips returns and refunds** | Checks **Manage Returns** (seller-fulfilled and FBA) and the orders page first. Orders with a return (requested, pending, approved or completed) or a refund are skipped. |
 | **Every page** | Works through Amazon's pages of 100 orders on its own and stops once it reaches orders past the 30-day window. |
 | **Tells you what's next** | Finishes with a short summary and the next day more orders open, e.g. *Next batch: Sep 29 (4 orders)*. |
 | **Private** | No account, no servers, no tracking. It talks only to Seller Central, and results stay on your computer. |
@@ -88,6 +83,14 @@ Most review tools ask you to connect your seller account to their servers, pay a
 | **Error – tap** / **Needs a look** | Something went wrong. Tap for the reason. |
 
 There are no settings and no menus. Tapping any label explains it.
+
+## Watch the 1-minute overview
+
+What it does, how a run works, and how it keeps your data private, with sound.
+
+https://github.com/user-attachments/assets/3f7e35fd-601d-4a0a-9d73-c98cd373a144
+
+<sub>Made-up orders only. Music: "Rose Water" by massobeats.</sub>
 
 ## Privacy and safety
 
@@ -221,7 +224,7 @@ Skipping returns is best effort. If Manage Returns can't be read, ReviewNudge st
 <details>
 <summary><b>Does it check FBA returns?</b></summary>
 
-Not yet. It reads the seller-fulfilled Manage Returns list, and the "Refunded" label on the orders page for every order. FBA return support is on the list.
+Yes. After the seller-fulfilled list, ReviewNudge opens **Manage FBA returns** (one click away in Manage Returns), sets it to the last 90 days and skips every order on it. Amazon lists an FBA return there once the buyer has been refunded, so an FBA return that's only just been requested may not show yet. The orders page's "Refunded" label is checked for every order too.
 </details>
 
 <details>
@@ -249,7 +252,7 @@ ReviewNudge/
 │   └── icons/
 ├── tests/              simulated Seller Central (fake browser, fake Amazon pages)
 ├── scripts/            package.sh · make-icons.py
-├── docs/               HOW-IT-WORKS.md · PRIVACY.md · images · video
+├── docs/               HOW-IT-WORKS.md · PRIVACY.md · images
 └── assets/             full-size logo
 ```
 
