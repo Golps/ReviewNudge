@@ -1,0 +1,79 @@
+/* Per-order popup and notices. Pills and the toolbar button
+   use inline styles so they also look right inside Amazon's shadow DOM. */
+
+@keyframes nudge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+#nudge-pop, #nudge-toast {
+  --nudge-text: #0f1111;
+  --nudge-sub: #565959;
+  --nudge-line: #d5d9d9;
+  --nudge-link: #007185;
+  box-sizing: border-box;
+  font-family: "Amazon Ember", Arial, sans-serif;
+  color: var(--nudge-text);
+  text-align: left;
+  z-index: 2147483000;
+}
+#nudge-pop *, #nudge-toast * { box-sizing: border-box; font-family: inherit; }
+#nudge-pop[hidden], #nudge-toast[hidden] { display: none !important; }
+
+#nudge-pop .nudge-x, #nudge-toast .nudge-x {
+  margin-left: auto; border: 0; background: none; padding: 0 2px;
+  font-size: 20px; line-height: 20px; color: var(--nudge-sub); cursor: pointer;
+}
+
+/* ---- popup under an order's pill ---- */
+#nudge-pop {
+  width: 280px;
+  max-width: calc(100vw - 16px);
+  background: #fff;
+  border: 1px solid var(--nudge-line);
+  border-left: 4px solid #879596;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(15, 17, 17, .15);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 19px;
+}
+#nudge-pop[data-tone="ok"] { border-left-color: #1e8e3e; }
+#nudge-pop[data-tone="warn"] { border-left-color: #c9a400; }
+#nudge-pop[data-tone="err"], #nudge-pop[data-tone="returned"] { border-left-color: #b12704; }
+#nudge-pop[data-tone="info"] { border-left-color: #f0b35c; }
+#nudge-pop .nudge-pop-head { display: flex; align-items: center; gap: 8px; }
+#nudge-pop .nudge-pop-title { font-size: 14px; font-weight: 700; }
+#nudge-pop[data-tone="ok"] .nudge-pop-title { color: #1e6b34; }
+#nudge-pop[data-tone="err"] .nudge-pop-title, #nudge-pop[data-tone="returned"] .nudge-pop-title { color: #b12704; }
+#nudge-pop .nudge-pop-line { margin-top: 2px; color: var(--nudge-sub); word-break: break-word; }
+#nudge-pop .nudge-pop-line:empty { display: none; }
+#nudge-pop .nudge-pop-action {
+  margin-top: 8px; height: 28px; padding: 0 14px; border-radius: 100px; border: 1px solid #888c8c;
+  background: #fff; color: var(--nudge-text); font-size: 13px; cursor: pointer;
+}
+#nudge-pop .nudge-pop-action[hidden] { display: none; }
+
+/* ---- notice at the bottom of the screen ---- */
+#nudge-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 10px 14px 10px 16px;
+  border-radius: 8px;
+  background: #232f3e;
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  box-shadow: 0 4px 16px rgba(15, 17, 17, .25);
+}
+#nudge-toast[data-tone="ok"] { background: #1e6b34; }
+#nudge-toast[data-tone="err"] { background: #b12704; }
+#nudge-toast .nudge-x { color: rgba(255, 255, 255, .85); margin-left: 4px; }
+
+#nudge-toast .nudge-toast-line { display: block; }
+#nudge-toast .nudge-toast-line:first-child:not(:only-child) { font-weight: 700; }
+#nudge-toast { transition: opacity .6s ease, transform .6s ease; }
+#nudge-toast.nudge-fade { opacity: 0; transform: translateX(-50%) translateY(8px); }

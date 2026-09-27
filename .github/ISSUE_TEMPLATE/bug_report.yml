@@ -1,0 +1,30 @@
+name: Something isn't working
+description: A label, the button or a run didn't do what you expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please don't include real order numbers, buyer names, addresses or unblurred screenshots of Seller Central.**
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options: [Chrome, Firefox, Safari, Edge, Other Chromium browser]
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: ReviewNudge version
+      description: From manifest.json or your browser's extensions page, e.g. 0.8.0
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you clicked, what the label or summary said, and what you expected instead.
+    validations: { required: true }
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot (blurred)
+      description: Optional. Blur order numbers, names and anything else about your customers.

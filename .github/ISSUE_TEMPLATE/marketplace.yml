@@ -1,0 +1,25 @@
+name: Support my marketplace
+description: Ask for ReviewNudge to support another Seller Central site or language.
+labels: [marketplace]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ReviewNudge reads Seller Central's own pages, so each site needs one check before it's supported.
+        **Please blur order numbers, buyer names and addresses in any screenshot.**
+  - type: input
+    id: site
+    attributes:
+      label: Seller Central address
+      placeholder: e.g. sellercentral-europe.amazon.com
+    validations: { required: true }
+  - type: input
+    id: language
+    attributes:
+      label: Seller Central language
+      placeholder: e.g. English, Deutsch
+  - type: textarea
+    id: screens
+    attributes:
+      label: Screenshots (blurred)
+      description: Manage Orders (one or two rows) and Manage Returns, with personal details blurred.

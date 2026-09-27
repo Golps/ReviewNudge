@@ -1,0 +1,17 @@
+{
+  "name": "reviewnudge",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Development tools for ReviewNudge. The extension itself (in extension/) has no dependencies.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/simulation.test.js",
+    "lint": "web-ext lint --source-dir extension",
+    "package": "sh scripts/package.sh",
+    "icons": "python3 scripts/make-icons.py"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0",
+    "web-ext": "^10.0.0"
+  }
+}
