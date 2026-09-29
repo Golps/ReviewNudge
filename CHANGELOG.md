@@ -7,6 +7,7 @@
 - 0.8.2's "greyed-out button" guesses are forgotten: a greyed button didn't reliably mean *already requested*.
 - **The Request Reviews button answers the moment you click it**: a spinning ring and *Starting…*, then *Sending 3 of 20 · Stop*.
 - Shorter time limits, so a stuck Amazon page gives up in a minute instead of two.
+- **Diagnostic:** Option-click (Alt-click) **Request Reviews** to see, for a few orders, exactly what Amazon answers. Read-only: nothing is sent or clicked.
 
 ## 0.8.2
 

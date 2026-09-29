@@ -1196,6 +1196,22 @@ async function main() {
     check('V15 unknown Amazon reason → falls back to Amazon\'s page, not "not eligible"', st(env, id(641)).status !== 'notEligible', st(env, id(641)).status + ' ' + st(env, id(641)).detail);
   }
 
+
+  // X: Option-click diagnostic is read-only and shows Amazon's answers
+  {
+    const orders = { [id(701)]: { age: 12, amazon: 'eligible' }, [id(702)]: { age: 12, amazon: 'already' } };
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 2);
+    await sleep(2500);
+    launcherOf(w).dispatchEvent(new w.MouseEvent('click', { bubbles: true, altKey: true }));
+    await waitFor(() => /Done\. Copy this text/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
+    const txt = w.document.querySelector('#nudge-diag textarea').value;
+    check('X1 diagnostic lists orders with Amazon\'s replies', txt.includes(id(701)) && /quick lookup GET: 200/.test(txt) && /review page: controls: .*"Yes"/.test(txt), txt.slice(0, 300));
+    check('X2 diagnostic sends nothing and presses nothing', !env.posts && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length && idle(w));
+  }
+
   await sleep(300);
   console.log(`\nunhandled rejections: ${unhandled.length}${unhandled.length ? `\n${unhandled.slice(0, 5).join('\n---\n')}` : ''}`);
   console.log(`\n${pass} passed, ${fail} failed`);

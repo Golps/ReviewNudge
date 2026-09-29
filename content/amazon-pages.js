@@ -534,6 +534,7 @@
   globalThis.__nudgeReadReturns = readReturns;
   globalThis.__nudgeReadFbaReturns = readFbaReturns;
   globalThis.__nudgeDrive = drive;
+  globalThis.__nudgePageText = (doc) => pageText(doc, false);
   globalThis.__nudgeFindReturn = (text) => {
     const r = findReturn(text);
     return r ? { phrase: r, returnKind: returnKindOf(r) } : null;
