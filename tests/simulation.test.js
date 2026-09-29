@@ -539,7 +539,7 @@ class Env {
       if (this.site.getMode !== 'json') return { type: 'basic', status: 404, json: async () => { throw new Error('html'); } };
       const kind = o.amazon || 'eligible';
       if (this.sends[m[1]] || kind === 'already' || kind === 'alreadyNoYes') return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_ALREADY_SENT' });
-      if (kind === 'eligible') return json(200, { isEligible: true });
+      if (kind === 'eligible' || kind === 'eligibleSlow') return json(200, { isSuccess: true });
       return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_OUTSIDE_TIME_WINDOW' });
     }
     if (!m || opts.method !== 'POST') return { type: 'basic', status: 404, json: async () => { throw new Error('html'); } };
@@ -1124,7 +1124,7 @@ async function main() {
       [id(603)]: { age: 12, amazon: 'already' },
       [id(605)]: { age: 12, amazon: 'already' }, // "Needs a look" that did go through
       [id(606)]: { age: 12, amazon: 'eligible' }, // an old 0.8.2 guess
-      [id(607)]: { age: 2, amazon: 'eligible' }, // not open yet: never looked up
+      [id(607)]: { age: 2, amazon: 'notEligible' }, // not open yet
     };
     const site = new Site(orders);
     site.getMode = 'json';
@@ -1140,7 +1140,8 @@ async function main() {
     check('V5 old greyed-button guesses are forgotten', L(606) === 'Request review', L(606));
     check('V6 lookups are fast: whole page in a few seconds', Date.now() - t0 < 12000, `${Date.now() - t0} ms`);
     check('V7 lookups never send, open pages or press Yes', !env.posts && !Object.keys(env.visits).length && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length);
-    check('V8 not-yet-open order is not looked up', !env.gets[id(607)], JSON.stringify(env.gets));
+    await waitFor(() => st(env, id(607)).verifiedDay === today, 10000, '607').catch(() => {});
+    check('V8 not-yet-open order: Amazon says not yet → stays "Opens ~"', /^Opens ~/.test(L(607)) && st(env, id(607)).status === 'notEligible', `${L(607)} ${st(env, id(607)).status}`);
     const end = await sendAll(w);
     check('V9 Request Reviews only sends the eligible ones', env.sends[id(602)] === 1 && env.sends[id(606)] === 1 && !env.posts[id(601)] && !env.posts[id(603)], JSON.stringify(env.posts));
     check('V9 summary', /^Done\. Sent 2\b/.test(end), end);
@@ -1158,7 +1159,7 @@ async function main() {
     const w = await ready(env, env.openList(), 6);
     await sleep(4000);
     check('V11 unclear replies change nothing and nothing turns red', Object.keys(orders).every((k) => label(w, k) === 'Request review'), Object.keys(orders).map((k) => label(w, k)).join(' | '));
-    check('V11 gives up after 3 unclear replies', Object.values(env.gets || {}).reduce((a, b) => a + b, 0) === 3, JSON.stringify(env.gets));
+    check('V11 gives up after 5 unreadable replies', Object.values(env.gets || {}).reduce((a, b) => a + b, 0) === 5, JSON.stringify(env.gets));
     const end = await sendAll(w);
     check('V12 the send gets Amazon\'s real answer: already → "Already requested", no error', label(w, id(611)) === 'Already requested' && /1 already requested/.test(end) && !/error/i.test(end), end);
   }

@@ -278,15 +278,19 @@ async function report(sender, result) {
 // "Needs a look" is settled by it.
 async function recordCheck(msg) {
   const { orderId, answer, orderDate, closesOn } = msg || {};
-  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '') || !['already', 'eligible'].includes(answer)) return false;
-  if (await getJob()) return false; // a send is in progress; its own answer wins
+  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '') || !['already', 'eligible', 'notEligible'].includes(answer)) return false;
+  const job = await getJob();
+  if (job && job.orderId === orderId && Date.now() - job.startedAt < STALE_JOB_MS) return false; // being sent now; its own answer wins
   const { statuses = {} } = await getStored(['statuses']);
   const prev = statuses[orderId] || {};
   if (FINAL.has(prev.status) && prev.status !== 'unknown') return false;
   const result =
     answer === 'already'
       ? { status: 'already', detail: 'Amazon says a review was already requested for this order.' }
-      : { status: 'eligible', detail: 'Amazon accepts a review request for this order.' };
+      : answer === 'eligible'
+        ? { status: 'eligible', detail: 'Amazon accepts a review request for this order.' }
+        : { status: 'notEligible', detail: String(msg.detail || "Amazon doesn't accept a request for this order right now.").slice(0, 200) };
+  if (answer !== 'already' && prev.status === 'unknown') return false; // only "already" settles "Needs a look" safely
   statuses[orderId] = buildRecord(prev, orderId, result, isDay(orderDate) ? orderDate : null, false, closesOn);
   await api.storage.local.set({ statuses: prune(statuses, orderId) });
   return true;
@@ -352,7 +356,7 @@ async function migrate() {
     if (rec.status === 'closed' && /^It was eligible on/.test(rec.detail || '')) {
       statuses[id] = { ...rec, status: 'notEligible', checkedDay: '', detail: 'Outside Amazon\'s 5–30 day window', seenEligible: undefined, eligibleDay: undefined };
       changed = true;
-    } else if (rec.status === 'eligible' || rec.status === 'greyed') {
+    } else if (rec.status === 'greyed' || (rec.status === 'eligible' && !rec.verifiedDay)) {
       // Old check-only results and 0.8.2's greyed-button guesses: not reliable, forget them.
       delete statuses[id];
       changed = true;

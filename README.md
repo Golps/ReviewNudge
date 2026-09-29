@@ -107,6 +107,16 @@ ReviewNudge was built with sensitive seller data in mind:
 
 Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
+### See exactly what it reads: the diagnostic
+
+Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run, a panel opens and, for up to five orders on the page, shows:
+
+- the label ReviewNudge shows, and what it has saved for that order,
+- Amazon's own answer about whether a review can be requested (for example `REVIEW_REQUEST_ALREADY_SENT`),
+- the order page's **Request a Review** control, and the data requests Amazon's Request a Review page makes.
+
+It's **read-only**: it doesn't send a request, click **Yes**, or change anything. Email addresses are hidden. The text stays in your browser until you close the panel; copy it only if you want to share it, for example in a bug report. Order numbers do appear in it.
+
 ## How ReviewNudge is different
 
 | | **ReviewNudge** | Hosted review services | Speed scripts |

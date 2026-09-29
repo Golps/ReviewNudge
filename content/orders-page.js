@@ -1033,9 +1033,9 @@
   // Anything else (an error, an unfamiliar reply) changes nothing, and after a
   // few of those in a row checking is switched off for the day: the send itself
   // gets Amazon's definite answer, in under a second per order.
-  const CHECK_GAP_MS = [350, 800];
+  const CHECK_GAP_MS = [250, 550];
   const CHECK_TIMEOUT_MS = 8000;
-  const CHECK_GIVE_UP = 3; // unclear replies in a row before checking stops for today
+  const CHECK_GIVE_UP = 5; // unreadable replies in a row (errors, not JSON) before checking stops for today
 
   function needsCheck(id) {
     const b = buttons.get(id);
@@ -1044,20 +1044,26 @@
     const rec = lastStatuses[id];
     if (rec && ['sent', 'already', 'skippedReturn', 'closed'].includes(rec.status)) return false;
     if (rec && rec.verifiedDay === today) return false;
-    const v = viewOf(rec, b, today);
-    // Only orders that would be sent (or "Needs a look", which a check can settle).
-    return (v.batch || (rec && rec.status === 'unknown')) && !rowReturn(id);
+    // Past the window by the dates: Amazon won't take it, no need to ask.
+    if (viewOf(rec, b, today).group === 'past 30 days') return false;
+    return !rowReturn(id);
   }
 
-  // What Amazon's reply says, if anything: 'already' | 'eligible' | null.
+  // What Amazon's reply says. This is the same check Amazon's own Request a
+  // Review page makes before it shows Yes/No:
+  //   {"isSuccess":true}                                                → can be sent
+  //   {"isSuccess":false,"ineligibleReason":"REVIEW_REQUEST_ALREADY_SENT"} → already requested
+  //   {"isSuccess":false,"ineligibleReason":"…"}                          → not now (window, etc.)
   function readCheck(data) {
     if (!data || typeof data !== 'object') return null;
     const reason = typeof data.ineligibleReason === 'string' ? data.ineligibleReason : '';
-    // Strict: Amazon's own reason code, or its exact wording. "Already requested" is final.
-    if (/ALREADY|DUPLICATE/.test(reason) || /already (?:been )?requested a review|review (?:has )?already been requested/i.test(JSON.stringify(data))) return 'already';
-    if (reason) return null; // other reasons: leave it to the send
-    const yes = [data.isEligible, data.eligible, data.canSolicit, data.isSolicitationAllowed].some((x) => x === true);
-    return yes ? 'eligible' : null;
+    if (/ALREADY|DUPLICATE/i.test(reason)) return { answer: 'already' };
+    if (data.isSuccess === true || data.isEligible === true) return { answer: 'eligible' };
+    if (reason) {
+      const words = reason.replace(/^REVIEW_REQUEST_/, '').replace(/_/g, ' ').toLowerCase();
+      return { answer: 'notEligible', detail: /WINDOW|TIME/i.test(reason) ? "Outside Amazon's 5–30 day window" : `Amazon: ${words}` };
+    }
+    return null;
   }
 
   async function checkOne(id) {
@@ -1073,7 +1079,7 @@
       } catch (e) {
         /* not JSON */
       }
-      return { answer: readCheck(data) };
+      return readCheck(data) || { answer: null };
     } catch (e) {
       return { answer: null };
     } finally {
@@ -1088,11 +1094,16 @@
 
   async function checkAll() {
     if (busy || checkRun || checkOffDay === localDay()) return;
-    const ids = pageIds().filter(needsCheck);
+    const today0 = localDay();
+    // Orders that would be sent first, then the ones not expected to be open yet.
+    const ids = pageIds()
+      .filter(needsCheck)
+      .sort((x, y) => Number(!viewOf(lastStatuses[x], buttons.get(x), today0).batch) - Number(!viewOf(lastStatuses[y], buttons.get(y), today0).batch));
     if (!ids.length) return;
     checkStop = false;
     const run = (async () => {
       let unclear = 0;
+      let sinceRepaint = 0;
       for (let i = 0; i < ids.length && !checkStop && !busy; i++) {
         const id = ids[i];
         if (!needsCheck(id)) continue;
@@ -1101,7 +1112,11 @@
         if (r.signedOut) break; // Seller Central wants a sign-in; the orders page will show it
         if (r.answer) {
           unclear = 0;
-          await send({ type: 'checked', orderId: id, answer: r.answer, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
+          await send({ type: 'checked', orderId: id, answer: r.answer, detail: r.detail, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
+          if (++sinceRepaint >= 5) {
+            sinceRepaint = 0;
+            await repaintAll(); // labels update as answers come in
+          }
         } else if (++unclear >= CHECK_GIVE_UP) {
           checkOffDay = localDay();
           break;

@@ -15,7 +15,8 @@ A technical walkthrough for anyone who wants to check the logic before trusting 
 8. [Moving through pages](#moving-through-pages)
 9. [When it stops](#when-it-stops)
 10. [What's stored, and for how long](#whats-stored-and-for-how-long)
-11. [Testing](#testing)
+11. [The diagnostic](#the-diagnostic)
+12. [Testing](#testing)
 
 ## One code base, three browsers
 
@@ -67,20 +68,21 @@ Amazon allows a request from **5 to 30 days after delivery**, not after the orde
 
 ## Confirming each order with Amazon
 
-Saved results are a fallback, not the answer. When Manage Orders opens, and again after each run, every order that would be sent (or shows **Needs a look**) and hasn't been looked up **today** gets one quick, read-only lookup:
+Saved results are a fallback, not the answer. When Manage Orders opens, and again after each run, every order that isn't finished and isn't past the window gets one quick, read-only lookup, unless it was already looked up **today**:
 
-- a `GET` of the same address Amazon's **Yes** button posts to (`/messaging/api/solicitations/{order}/productReviewAndSellerFeedback`). A GET only reads; nothing is sent, no page is opened, nothing is clicked;
-- one order at a time, 0.35–0.8 seconds apart, so a page of 100 orders takes about a minute in the background.
+- a `GET` of `/messaging/api/solicitations/{order}/productReviewAndSellerFeedback`. That's the same check Amazon's own Request a Review page makes before it shows Yes/No. A GET only reads; nothing is sent, no page is opened, nothing is clicked;
+- one order at a time, 0.25–0.55 seconds apart: orders that would be sent first, then orders not expected to be open yet. Labels update as answers arrive; a page of 100 orders takes under a minute.
 
-Only a clear answer changes a label:
+Amazon's answer decides the label:
 
 | Amazon's reply | Label |
 |---|---|
-| A request already exists | **Already requested** (final) |
-| It can be sent | **Request review** |
-| Anything else | unchanged |
+| `{"isSuccess": true}` | **Request review** |
+| `ineligibleReason: REVIEW_REQUEST_ALREADY_SENT` | **Already requested** (final) |
+| Any other `ineligibleReason` (for example outside the time window) | **Opens ~date** or **Not eligible yet**, looked up again tomorrow |
+| No readable answer | unchanged |
 
-After three unclear replies in a row, lookups stop for the day. That's fine: the send itself returns Amazon's definite answer in under a second, and an order that turns out to be already requested simply shows **Already requested**, never an error. Orders whose window hasn't opened, or has closed, are never looked up.
+After five unreadable replies in a row (errors, not JSON), lookups stop for that visit. The send itself still returns Amazon's definite answer in under a second, so an already-requested order shows **Already requested**, never an error.
 
 ## Skipping returns and refunds
 
@@ -140,6 +142,17 @@ Manage Orders shows up to 100 orders per page, newest first. After finishing a p
 | `settings` | Internal: which sending method is working today. There are no user settings. |
 
 Each order's record is deleted a day after its review window closes (or 45 days after the order date if no delivery estimate was available).
+
+## The diagnostic
+
+Option-click (Alt-click) **Request Reviews** to see what ReviewNudge sees, for up to five orders on the page (three it would send, two it considers done):
+
+1. The order's label and its saved record.
+2. The quick lookup above, with Amazon's reply.
+3. The order's page, loaded invisibly: its **Request a Review** control and whether it's disabled.
+4. Amazon's Request a Review page, loaded invisibly: its visible controls, and each data request it made, read again with `GET`.
+
+Nothing is sent or clicked, email addresses are masked, and the text stays in the panel until you close it. It exists so that anyone can check the extension against their own account, and so bug reports can include Amazon's actual answers.
 
 ## Testing
 
