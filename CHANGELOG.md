@@ -5,7 +5,7 @@
 - **Already requested is now detected before you send.** A real-account diagnostic showed that Amazon's quick check answers clearly: `REVIEW_REQUEST_ALREADY_SENT` for orders already requested, and `isSuccess: true` for orders that can be requested. 0.8.3 didn't recognize the second answer, so it switched checking off after the first few eligible orders and never reached the already-requested ones. Both answers are now read, and so is *not eligible yet*.
 - Every order that isn't finished or past the window is looked up, once a day: orders that would be sent first, then orders not expected to be open yet. Labels update as answers arrive.
 - Orders Amazon confirmed as eligible today keep that result when the browser restarts the extension's background.
-- The diagnostic is documented in the README, *How it works* and *Privacy*.
+- The diagnostic now lists **every** order on the page, with its label next to Amazon's answer, a ⚠ where they disagree, and totals. It's faster too: one quick lookup per order, no page loads. Documented in the README, *How it works* and *Privacy*.
 
 ## 0.8.3
 

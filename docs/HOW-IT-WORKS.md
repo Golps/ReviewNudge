@@ -145,14 +145,13 @@ Each order's record is deleted a day after its review window closes (or 45 days 
 
 ## The diagnostic
 
-Option-click (Alt-click) **Request Reviews** to see what ReviewNudge sees, for up to five orders on the page (three it would send, two it considers done):
+Option-click (Alt-click) **Request Reviews** to check the labels against Amazon yourself. For every order on the page (up to 100), one line:
 
-1. The order's label and its saved record.
-2. The quick lookup above, with Amazon's reply.
-3. The order's page, loaded invisibly: its **Request a Review** control and whether it's disabled.
-4. Amazon's Request a Review page, loaded invisibly: its visible controls, and each data request it made, read again with `GET`.
+```
+order · label shown · saved result · Amazon says
+```
 
-Nothing is sent or clicked, email addresses are masked, and the text stays in the panel until you close it. It exists so that anyone can check the extension against their own account, and so bug reports can include Amazon's actual answers.
+*Amazon says* comes from the same read-only lookup described in [Confirming each order with Amazon](#confirming-each-order-with-amazon), made fresh for the diagnostic. A ⚠ marks a label that disagrees, and the last lines give totals. Nothing is sent or clicked and nothing is saved. The text disappears when you close the panel. It exists so anyone can verify the extension against their own account, and so bug reports can include Amazon's actual answers.
 
 ## Testing
 

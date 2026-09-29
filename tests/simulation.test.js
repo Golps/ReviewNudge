@@ -1207,9 +1207,9 @@ async function main() {
     const w = await ready(env, env.openList(), 2);
     await sleep(2500);
     launcherOf(w).dispatchEvent(new w.MouseEvent('click', { bubbles: true, altKey: true }));
-    await waitFor(() => /Done\. Copy this text/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
+    await waitFor(() => /Copy this text/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
     const txt = w.document.querySelector('#nudge-diag textarea').value;
-    check('X1 diagnostic lists orders with Amazon\'s replies', txt.includes(id(701)) && /quick lookup GET: 200/.test(txt) && /review page: controls: .*"Yes"/.test(txt), txt.slice(0, 300));
+    check('X1 diagnostic compares every label with Amazon', new RegExp(`${id(701)} · Request review · [^·]+ · can be requested`).test(txt) && new RegExp(`${id(702)} · Already requested · [^·]+ · already requested`).test(txt) && /agree with Amazon: 2 · disagree \(⚠\): 0/.test(txt), txt);
     check('X2 diagnostic sends nothing and presses nothing', !env.posts && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length && idle(w));
   }
 

@@ -1414,55 +1414,10 @@
 
 
   // ---------- diagnostic (Option-click the button) ----------
-  // Read-only. For a few orders it shows what Amazon answers: the quick lookup,
-  // the order page's Request a Review control, and the data requests Amazon's own
-  // Request a Review page makes (re-read with GET). Nothing is sent or clicked.
-  const SAFE_API = /\/(?:messaging|solicitation|solicitations|review|reviews)\b/i;
-  const clip = (t, n = 400) => String(t || '').replace(/\s+/g, ' ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email]').slice(0, n);
-
-  async function getText(url) {
-    try {
-      const r = await pageFetch(url, { method: 'GET', credentials: 'include', headers: { Accept: 'application/json, text/plain, */*' }, redirect: 'manual' });
-      const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
-      const body = r.type === 'opaqueredirect' ? '' : typeof r.text === 'function' ? await r.text().catch(() => '') : JSON.stringify(await r.json().catch(() => ''));
-      const isJson = /json/i.test(type) || /^\s*[[{]/.test(body);
-      return `${r.status || r.type} ${type.split(';')[0]} ${isJson ? clip(body) : `(${body.length} chars, not JSON)`}`;
-    } catch (e) {
-      return `failed: ${e && e.message}`;
-    }
-  }
-
-  async function loadAndWatch(url, waitMs) {
-    const frame = makeFrame();
-    try {
-      const first = await frameLoader(frame, url);
-      if (first !== 'continue') return { blocked: true };
-      await sleep(waitMs);
-      const w = frame.contentWindow;
-      const d = frame.contentDocument;
-      const reqs = [...new Set(((w.performance && w.performance.getEntriesByType && w.performance.getEntriesByType('resource')) || []).map((x) => x.name))]
-        .filter((u) => u.startsWith(location.origin) && SAFE_API.test(new URL(u).pathname) && !/\.(?:js|css|png|svg|woff2?)(?:\?|$)/i.test(u));
-      const text = globalThis.__nudgePageText ? globalThis.__nudgePageText(d) : (d.body ? d.body.innerText : '');
-      const ctrls = [];
-      const walk = (root) => {
-        for (const e of root.querySelectorAll('*')) {
-          if (e.shadowRoot) walk(e.shadowRoot);
-          const label = (e.getAttribute('label') || e.getAttribute('aria-label') || e.textContent || '').replace(/\s+/g, ' ').trim();
-          if (/^(?:request (?:a )?review|yes|no)$/i.test(label) && /^(?:BUTTON|A|KAT-BUTTON|KAT-LINK)$/.test(e.tagName)) {
-            const inner = e.shadowRoot && e.shadowRoot.querySelector('button');
-            const dis = e.disabled || e.hasAttribute('disabled') || e.getAttribute('aria-disabled') === 'true' || !!(inner && inner.disabled);
-            ctrls.push(`${e.tagName.toLowerCase()} "${label}"${dis ? ' DISABLED' : ''}${e.getAttribute('href') ? ` href=${clip(e.getAttribute('href'), 120)}` : ''}`);
-          }
-        }
-      };
-      if (d) walk(d);
-      return { reqs, controls: [...new Set(ctrls)].slice(0, 6), text: clip(text.replace(/\|/g, ' '), 500) };
-    } catch (e) {
-      return { error: e && e.message };
-    } finally {
-      frame.remove();
-    }
-  }
+  // Read-only. For every order on the page, shows the label next to Amazon's own
+  // answer (the same lookup the labels use) and flags any disagreement.
+  // Nothing is sent or clicked, and nothing is saved.
+  const DIAG_MAX = 100;
 
   function diagPanel() {
     let p = document.getElementById('nudge-diag');
@@ -1471,7 +1426,7 @@
       p.id = 'nudge-diag';
       p.setAttribute('data-nudge-ui', '');
       Object.assign(p.style, { position: 'fixed', left: '16px', right: '16px', top: '16px', bottom: '16px', zIndex: '2147483001', background: '#fff', border: '2px solid #232f3e', borderRadius: '8px', padding: '12px', font: '12px/1.4 Menlo, monospace', color: '#0f1111', display: 'flex', flexDirection: 'column', gap: '8px', boxShadow: '0 8px 30px rgba(0,0,0,.3)' });
-      p.innerHTML = '<div style="display:flex;justify-content:space-between;font:600 14px Arial"><span>ReviewNudge diagnostic (read-only, nothing is sent)</span><button type="button" data-close style="font:14px Arial">Close</button></div><textarea readonly style="flex:1;width:100%;font:12px/1.4 Menlo,monospace;white-space:pre-wrap"></textarea>';
+      p.innerHTML = '<div style="display:flex;justify-content:space-between;font:600 14px Arial"><span>ReviewNudge diagnostic · read-only, nothing is sent</span><button type="button" data-close style="font:14px Arial">Close</button></div><textarea readonly style="flex:1;width:100%;font:12px/1.4 Menlo,monospace;white-space:pre-wrap"></textarea>';
       p.querySelector('[data-close]').addEventListener('click', () => p.remove());
       document.body.appendChild(p);
     }
@@ -1497,35 +1452,38 @@
   }
 
   async function diagnoseInner(log) {
-    {
-      await stopChecks();
-      const today = localDay();
-      const { statuses = {} } = await get(['statuses']);
-      lastStatuses = statuses;
-      log(`ReviewNudge ${(api.runtime.getManifest && api.runtime.getManifest().version) || ''} · ${new Date().toISOString().slice(0, 16)} · ${navigator.userAgent.match(/(Safari|Firefox|Chrome)\/[\d.]+/g)?.join(' ') || ''}`);
-      // Mix: orders it would send, and orders it thinks are already done.
-      const rows = pageIds().map((id) => ({ id, v: viewOf(statuses[id], buttons.get(id), today), rec: statuses[id] }));
-      const pick = [...rows.filter((r) => r.v.batch).slice(0, 3), ...rows.filter((r) => /Already|Sent/.test(r.v.label)).slice(0, 2)];
-      if (!pick.length) pick.push(...rows.filter((r) => r.v.group !== 'past 30 days').slice(0, 3));
-      log(`Orders on page: ${rows.length}. Checking ${pick.length}.\n`);
-      for (const { id, v, rec } of pick) {
-        const mp = marketplaceFor(id);
-        log(`=== ${id} · label "${v.label}" · saved ${rec ? `${rec.status} (${rec.checkedDay || '?'})` : 'none'} · delivery ${buttons.get(id).dataset.nudgeDelivery || '?'}`);
-        log(`quick lookup GET: ${await getText(`${location.origin}/messaging/api/solicitations/${encodeURIComponent(id)}/productReviewAndSellerFeedback?marketplaceId=${mp}&isReturn=false`)}`);
-        const op = await loadAndWatch(buttons.get(id).dataset.nudgeUrl, 7000);
-        log(`order page: ${op.blocked ? 'could not load in a frame' : op.error ? `error ${op.error}` : `controls: ${op.controls.join(' ; ') || 'none found'}`}`);
-        if (op.reqs) for (const u of op.reqs) log(`  order page asked: ${clip(u.replace(location.origin, ''), 200)}`);
-        const rp = await loadAndWatch(`${location.origin}/messaging/reviews?orderId=${encodeURIComponent(id)}&marketplaceId=${mp}`, 7000);
-        log(`review page: ${rp.blocked ? 'could not load in a frame' : rp.error ? `error ${rp.error}` : `controls: ${rp.controls.join(' ; ') || 'none'} · text: ${rp.text}`}`);
-        for (const u of rp.reqs || []) {
-          log(`  review page asked: ${clip(u.replace(location.origin, ''), 200)}`);
-          log(`    → ${await getText(u)}`);
-        }
-        log('');
-        await sleep(rand(1500, 2500));
-      }
-      log('Done. Copy this text (click in it, Cmd+A, Cmd+C) and paste it to Claude.');
+    await stopChecks();
+    const today = localDay();
+    const { statuses = {} } = await get(['statuses']);
+    lastStatuses = statuses;
+    log(`ReviewNudge ${(api.runtime.getManifest && api.runtime.getManifest().version) || ''} · ${new Date().toISOString().slice(0, 16)} · ${(navigator.userAgent.match(/(Safari|Firefox|Chrome)\/[\d.]+/g) || []).join(' ')}`);
+    const ids = pageIds().slice(0, DIAG_MAX);
+    log(`Orders on page: ${pageIds().length}. Asking Amazon about ${ids.length}.\n`);
+    log('order · label shown · saved · Amazon says');
+    let match = 0;
+    let mismatch = 0;
+    let unread = 0;
+    for (const id of ids) {
+      const b = buttons.get(id);
+      const v = viewOf(statuses[id], b, today);
+      const rec = statuses[id];
+      const r = await checkOne(id);
+      const amazon = r.signedOut ? 'sign-in needed' : r.answer === 'already' ? 'already requested' : r.answer === 'eligible' ? 'can be requested' : r.answer === 'notEligible' ? `not now (${r.detail})` : 'no readable answer';
+      // Does the label agree with Amazon?
+      let ok = null;
+      if (r.answer === 'already') ok = /Already|Sent|Returned|Refunded|Past|Needs a look/.test(v.label);
+      else if (r.answer === 'eligible') ok = v.batch || /Returned|Refunded/.test(v.label);
+      else if (r.answer === 'notEligible') ok = !v.batch;
+      if (ok === true) match++;
+      else if (ok === false) mismatch++;
+      else unread++;
+      log(`${ok === false ? '⚠ ' : ''}${id} · ${v.label} · ${rec ? `${rec.status} ${rec.checkedDay || ''}`.trim() : 'none'} · ${amazon}`);
+      if (r.signedOut) break;
+      await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
     }
+    log(`\nLabels that agree with Amazon: ${match} · disagree (⚠): ${mismatch} · no answer: ${unread}`);
+    log(mismatch ? 'Labels marked ⚠ will be corrected on the next page load.' : 'All labels agree with Amazon.');
+    log('Copy this text (click in it, Cmd+A, Cmd+C) to share it. It is not saved anywhere.');
   }
 
   // ---------- start ----------

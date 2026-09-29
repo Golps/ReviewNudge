@@ -53,7 +53,7 @@ The whole extension is [`background.js`](../background.js) and [`content/`](../c
 
 - search it for `fetch(`: the only network requests are the review request and its read-only lookup, both to `sellercentral.amazon.com`,
 - open your browser's developer tools on Seller Central and watch the Network tab during a run,
-- Option-click (Alt-click) **Request Reviews** to open the read-only diagnostic, which shows Amazon's answers for a few orders. It sends nothing and keeps nothing: the text disappears when you close the panel.
+- Option-click (Alt-click) **Request Reviews** to open the read-only diagnostic, which shows each order's label next to Amazon's own answer. It sends nothing and keeps nothing: the text disappears when you close the panel.
 
 ## Questions or concerns
 

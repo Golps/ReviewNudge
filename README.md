@@ -109,13 +109,13 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ### See exactly what it reads: the diagnostic
 
-Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run, a panel opens and, for up to five orders on the page, shows:
+Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run, a panel opens and lists every order on the page with:
 
 - the label ReviewNudge shows, and what it has saved for that order,
-- Amazon's own answer about whether a review can be requested (for example `REVIEW_REQUEST_ALREADY_SENT`),
-- the order page's **Request a Review** control, and the data requests Amazon's Request a Review page makes.
+- Amazon's own answer about whether a review can be requested (*can be requested*, *already requested*, or *not now*),
+- a ⚠ wherever the two disagree, and a total at the end.
 
-It's **read-only**: it doesn't send a request, click **Yes**, or change anything. Email addresses are hidden. The text stays in your browser until you close the panel; copy it only if you want to share it, for example in a bug report. Order numbers do appear in it.
+It's **read-only**: it doesn't send a request, click anything, or change anything. The text stays in your browser until you close the panel. Copy it only if you want to share it, for example in a bug report. Order numbers do appear in it.
 
 ## How ReviewNudge is different
 
