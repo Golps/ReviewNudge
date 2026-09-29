@@ -10,6 +10,7 @@
 - A reason from Amazon that ReviewNudge doesn't recognize is never guessed at: it reads Amazon's page for the real answer instead.
 - **Needs a look** clears itself once Amazon shows the order as already requested, or offers the button again.
 - While a check is running, the label shows **Checking…**. Tap it to send right away.
+- The notice at the bottom of the screen is centred: the message sits in the middle, balanced by the close button.
 
 ## 0.8.1
 

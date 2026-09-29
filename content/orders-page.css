@@ -57,11 +57,17 @@
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%);
-  display: flex;
+  /* Three columns: an empty spacer, the message, and the close button. The
+     spacer and button are the same width, so the message sits dead centre. */
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: center;
-  gap: 12px;
+  column-gap: 8px;
+  width: max-content;
+  min-width: min(320px, calc(100vw - 32px));
   max-width: min(640px, calc(100vw - 32px));
-  padding: 10px 14px 10px 16px;
+  padding: 12px 10px;
+  text-align: center;
   border-radius: 8px;
   background: #232f3e;
   color: #fff;
@@ -71,7 +77,9 @@
 }
 #nudge-toast[data-tone="ok"] { background: #1e6b34; }
 #nudge-toast[data-tone="err"] { background: #b12704; }
-#nudge-toast .nudge-x { color: rgba(255, 255, 255, .85); margin-left: 4px; }
+#nudge-toast::before { content: ""; }
+#nudge-toast .nudge-x { color: rgba(255, 255, 255, .85); margin: 0; padding: 0; width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%; justify-self: center; }
+#nudge-toast .nudge-x:hover { background: rgba(255, 255, 255, .18); }
 
 #nudge-toast .nudge-toast-line { display: block; }
 #nudge-toast .nudge-toast-line:first-child:not(:only-child) { font-weight: 700; }
