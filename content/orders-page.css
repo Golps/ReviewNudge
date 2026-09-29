@@ -2,6 +2,8 @@
    use inline styles so they also look right inside Amazon's shadow DOM. */
 
 @keyframes nudge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes nudge-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #nudge-launcher [data-dot] { animation-duration: 2.4s !important; } }
 
 #nudge-pop, #nudge-toast {
   --nudge-text: #0f1111;

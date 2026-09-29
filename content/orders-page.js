@@ -518,18 +518,24 @@
           : busy && progress
           ? `${progress.page > 1 ? `Page ${progress.page} · ` : ''}Sending ${progress.i} of ${progress.n} · Stop`
           : busy
-            ? 'Sending…'
+            ? 'Starting…'
             : 'Request Reviews';
-    const show = busy || attention;
+    // Working: a spinning ring, so a click is answered right away. Idle with a problem: a red dot.
+    const working = busy || checkingReturns;
     Object.assign(dot.style, {
-      display: show ? 'inline-block' : 'none',
-      width: '8px',
-      height: '8px',
+      display: working || attention ? 'inline-block' : 'none',
+      boxSizing: 'border-box',
+      width: working ? '14px' : '8px',
+      height: working ? '14px' : '8px',
       borderRadius: '50%',
-      background: attention && !busy ? '#cc0c39' : '#007185',
-      animation: busy ? 'nudge-pulse 1s ease-in-out infinite' : 'none',
+      border: working ? '2px solid rgba(0, 113, 133, .25)' : '0',
+      borderTopColor: working ? '#007185' : '',
+      background: working ? 'transparent' : '#cc0c39',
+      animation: working ? 'nudge-spin .8s linear infinite' : 'none',
       flex: 'none',
     });
+    launcher.setAttribute('aria-busy', working ? 'true' : 'false');
+    launcher.style.cursor = busy && !progress ? 'progress' : 'pointer';
     launcher.title = busy && progress ? 'Click to stop after the current order' : 'Send review requests to every eligible order on this page';
   }
 
@@ -1338,6 +1344,7 @@
     busy = true;
     stopRequested = false;
     attention = false;
+    renderLauncher(); // spinner shows the moment the button is clicked
     closePop();
     listSkips = 0;
     returnsUnread = false;
