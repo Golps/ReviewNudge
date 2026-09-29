@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.3
+
+- **Much faster, no more hanging.** 0.8.2 loaded each order's full Amazon page in the background to check it, several seconds per order. That's gone. Each order is now looked up with one small read-only request to the same Amazon address the Yes button uses (a GET, which never sends anything), a fraction of a second apart.
+- **Already requested vs. ready.** When Amazon's lookup says a request already exists, the order shows **Already requested** before you tap anything. When the lookup gives no clear answer, the label is left alone, and after three unclear answers in a row checking stops for the day. The send itself then gets Amazon's definite answer (sent, already requested, or not open yet) in under a second.
+- 0.8.2's "greyed-out button" guesses are forgotten: a greyed button didn't reliably mean *already requested*.
+- **The Request Reviews button answers the moment you click it**: a spinning ring and *Starting…*, then *Sending 3 of 20 · Stop*.
+- Shorter time limits, so a stuck Amazon page gives up in a minute instead of two.
+
 ## 0.8.2
 
 - **Labels are confirmed with Amazon, not just remembered.** Once a day, each order that could be requested is checked against the Request a Review button on Amazon's own order page (read only, never pressing Yes). Saved results are the fallback, so an order that was already requested, outside the extension or in an earlier session, now says **Already requested** instead of **Request review**.

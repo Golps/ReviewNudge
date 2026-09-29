@@ -17,7 +17,7 @@ function speed(src, pairs) {
 }
 const WORKER = speed(read('content/amazon-pages.js'), [
   ['POLL_MS = 400', 'POLL_MS = 15'],
-  ['BUTTON_WAIT_MS = 15000', 'BUTTON_WAIT_MS = 500'],
+  ['BUTTON_WAIT_MS = 10000', 'BUTTON_WAIT_MS = 500'],
   ['STAGE_TIMEOUT_MS = 30000', 'STAGE_TIMEOUT_MS = 1200'],
   ['SETTLE_MS = 3000', 'SETTLE_MS = 150'],
   ['STEP_DELAY_MIN_MS = 1500', 'STEP_DELAY_MIN_MS = 15'],
@@ -31,7 +31,7 @@ const WORKER = speed(read('content/amazon-pages.js'), [
 const ORDERS = speed(read('content/orders-page.js'), [
   ['GAP_MIN_MS = 3000', 'GAP_MIN_MS = 20'],
   ['GAP_MAX_MS = 6000', 'GAP_MAX_MS = 40'],
-  ['RESULT_TIMEOUT_MS = 120000', 'RESULT_TIMEOUT_MS = 5000'],
+  ['RESULT_TIMEOUT_MS = 60000', 'RESULT_TIMEOUT_MS = 5000'],
   ['RESCAN_MS = 3000', 'RESCAN_MS = 150'],
   ['setInterval(check, 2000)', 'setInterval(check, 100)'],
   ['const frameLoader = realFrameLoader;', 'const frameLoader = (f, u) => window.__nudgeFrameLoader(f, u);'],
@@ -531,6 +531,17 @@ class Env {
     await sleep(5);
     const m = url.match(/\/messaging\/api\/solicitations\/(\d{3}-\d{7}-\d{7})\/productReviewAndSellerFeedback\?marketplaceId=([A-Z0-9]+)/);
     const json = (status, body) => ({ type: 'basic', status, json: async () => body });
+    if (m && opts.method === 'GET') {
+      // Read-only lookup. site.getMode: 'none' (no JSON, like an unknown endpoint) or 'json'.
+      this.gets = this.gets || {};
+      this.gets[m[1]] = (this.gets[m[1]] || 0) + 1;
+      const o = this.site.orders[m[1]] || {};
+      if (this.site.getMode !== 'json') return { type: 'basic', status: 404, json: async () => { throw new Error('html'); } };
+      const kind = o.amazon || 'eligible';
+      if (this.sends[m[1]] || kind === 'already' || kind === 'alreadyNoYes') return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_ALREADY_SENT' });
+      if (kind === 'eligible') return json(200, { isEligible: true });
+      return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_OUTSIDE_TIME_WINDOW' });
+    }
     if (!m || opts.method !== 'POST') return { type: 'basic', status: 404, json: async () => { throw new Error('html'); } };
     const id = m[1];
     this.posts = this.posts || {};
@@ -1097,74 +1108,75 @@ async function main() {
   }
 
 
-  // V: every label is confirmed with Amazon's own button; saved results are only a fallback
+  // V: quick read-only lookups keep labels honest; saved results are only a fallback
   {
     const today = localDay();
     const y = localDay(daysAgo(1));
     const store = S4();
     store.statuses = {
       [id(603)]: { status: 'error', detail: 'Timed out waiting for Amazon.', checkedDay: today, checkedAt: Date.now() },
-      [id(604)]: { status: 'notEligible', detail: "Outside Amazon's 5–30 day window", checkedDay: y, checkedAt: Date.now() - 86400000, firstIneligibleDay: y },
       [id(605)]: { status: 'unknown', detail: "Couldn't confirm it went through.", checkedDay: y, checkedAt: Date.now() - 86400000 },
-      [id(606)]: { status: 'eligible', checkedDay: y, checkedAt: Date.now() - 86400000 },
+      [id(606)]: { status: 'greyed', checkedDay: y, checkedAt: Date.now() - 86400000 },
     };
     const orders = {
-      [id(601)]: { age: 12, req: 'disabled', amazon: 'already' }, // requested outside the extension: button greyed
+      [id(601)]: { age: 12, amazon: 'already' }, // requested outside the extension
       [id(602)]: { age: 12, amazon: 'eligible' },
-      [id(603)]: { age: 12, amazon: 'eligible' },
-      [id(604)]: { age: 12, amazon: 'eligible' },
-      [id(605)]: { age: 12, amazon: 'eligible' },
-      [id(606)]: { age: 12, req: 'disabled', amazon: 'already' }, // was "eligible" yesterday, sent since
+      [id(603)]: { age: 12, amazon: 'already' },
+      [id(605)]: { age: 12, amazon: 'already' }, // "Needs a look" that did go through
+      [id(606)]: { age: 12, amazon: 'eligible' }, // an old 0.8.2 guess
+      [id(607)]: { age: 2, amazon: 'eligible' }, // not open yet: never looked up
     };
-    const env = new Env(new Site(orders), { store });
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store });
+    const t0 = Date.now();
     const w = await ready(env, env.openList(), 6);
-    await waitFor(() => Object.keys(orders).every((k) => st(env, k).verifiedDay === today), 90000, 'all orders confirmed').catch(() => {});
+    await waitFor(() => label(w, id(601)) === 'Already requested' && label(w, id(605)) === 'Already requested' && label(w, id(603)) === 'Already requested', 15000, 'lookups').catch(() => {});
     const L = (n) => label(w, id(n));
-    check('V1 already requested outside the extension → "Already requested" without a tap', L(601) === 'Already requested' && st(env, id(601)).status === 'greyed', `${L(601)} ${st(env, id(601)).status}`);
-    check('V2 available button → "Request review", nothing sent while checking', L(602) === 'Request review' && !env.sends[id(602)] && !env.posts && !Object.keys(env.yesClicks).length, L(602));
-    check('V3 a saved error is replaced by what Amazon says now', L(603) === 'Request review' && st(env, id(603)).status === 'eligible', `${L(603)} ${st(env, id(603)).status}`);
-    check('V4 yesterday\'s "not eligible" is not shown as "Try again" or "ineligible"', L(604) === 'Request review', L(604));
-    check('V5 "Needs a look" settles once Amazon offers the button again', L(605) === 'Request review' && st(env, id(605)).status === 'eligible', `${L(605)} ${st(env, id(605)).status}`);
-    check('V6 yesterday\'s "eligible" is not trusted: Amazon has it greyed → "Already requested"', L(606) === 'Already requested', L(606));
-    check('V7 no red error pills and no "Try again" anywhere', !Object.keys(orders).some((k) => /Error|Try again|eligible$/i.test(label(w, k)) && !/^Not eligible yet$/.test(label(w, k))), Object.keys(orders).map((k) => label(w, k)).join(' | '));
-    check('V8 one order-page read per order, once', Object.keys(orders).every((k) => env.visits[k] === 1), JSON.stringify(env.visits));
-    // Tap on the greyed one: explained, and "Request anyway" asks Amazon directly.
-    btnOf(w, id(601)).click();
-    await sleep(80);
-    check('V9 tapping "Already requested" explains why', popTitle(w) === 'Already requested' && /greyed out/.test(popOf(w).querySelector('.nudge-pop-line').textContent), popTitle(w));
-    popOf(w).querySelector('.nudge-pop-action').click();
-    await waitFor(() => st(env, id(601)).status === 'already' && idle(w), 15000, 'request anyway');
-    check('V10 "Request anyway" gets Amazon\'s own answer → final "Already requested"', L(601) === 'Already requested' && env.posts[id(601)] === 1 && !env.sends[id(601)], `${L(601)} posts=${env.posts[id(601)]}`);
-    // Reload: the confirmed labels come straight from storage, no second read today.
-    const before = JSON.stringify(env.visits);
+    check('V1 requested outside the extension → "Already requested" before any tap', L(601) === 'Already requested', L(601));
+    check('V2 eligible order stays "Request review"', L(602) === 'Request review', L(602));
+    check('V3 a saved error is replaced by Amazon\'s answer', L(603) === 'Already requested', L(603));
+    check('V4 "Needs a look" is settled by the lookup', L(605) === 'Already requested', L(605));
+    check('V5 old greyed-button guesses are forgotten', L(606) === 'Request review', L(606));
+    check('V6 lookups are fast: whole page in a few seconds', Date.now() - t0 < 12000, `${Date.now() - t0} ms`);
+    check('V7 lookups never send, open pages or press Yes', !env.posts && !Object.keys(env.visits).length && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length);
+    check('V8 not-yet-open order is not looked up', !env.gets[id(607)], JSON.stringify(env.gets));
+    const end = await sendAll(w);
+    check('V9 Request Reviews only sends the eligible ones', env.sends[id(602)] === 1 && env.sends[id(606)] === 1 && !env.posts[id(601)] && !env.posts[id(603)], JSON.stringify(env.posts));
+    check('V9 summary', /^Done\. Sent 2\b/.test(end), end);
+    const before = JSON.stringify(env.gets);
     const w2 = await ready(env, env.openList(), 6);
-    await sleep(3500);
-    check('V11 same day reload → same labels, no new reads', label(w2, id(602)) === 'Request review' && label(w2, id(601)) === 'Already requested' && JSON.stringify(env.visits) === before, JSON.stringify(env.visits));
+    await sleep(2500);
+    check('V10 same-day reload → same labels, no new lookups', label(w2, id(601)) === 'Already requested' && label(w2, id(602)) === 'Sent ✓' && JSON.stringify(env.gets) === before, JSON.stringify(env.gets));
   }
 
-  // V12: a check that can't load is not an error: the saved label stays, nothing red
+  // V11: an endpoint that answers nothing useful → labels untouched, checking stops after 3 tries
   {
-    const store = S4();
-    store.statuses = { [id(611)]: { status: 'notEligible', detail: 'Amazon: not open', checkedDay: localDay(daysAgo(1)), checkedAt: Date.now() - 86400000, firstIneligibleDay: localDay(daysAgo(1)) } };
-    const env = new Env(new Site({ [id(611)]: { age: 12, req: 'none', amazon: 'eligible' } }), { store });
-    const w = await ready(env, env.openList(), 1);
-    await waitFor(() => st(env, id(611)).checkFailedDay === localDay(), 60000, 'check gives up');
-    await sleep(200);
-    check('V12 unreadable order page → saved label kept, no error pill', label(w, id(611)) === 'Request review' && st(env, id(611)).status === 'notEligible' && !/Error/.test(label(w, id(611))), `${label(w, id(611))} ${st(env, id(611)).status}`);
+    const orders = {};
+    for (let i = 611; i <= 616; i++) orders[id(i)] = { age: 12, amazon: i === 611 ? 'already' : 'eligible' };
+    const env = new Env(new Site(orders), { store: S4() });
+    const w = await ready(env, env.openList(), 6);
+    await sleep(4000);
+    check('V11 unclear replies change nothing and nothing turns red', Object.keys(orders).every((k) => label(w, k) === 'Request review'), Object.keys(orders).map((k) => label(w, k)).join(' | '));
+    check('V11 gives up after 3 unclear replies', Object.values(env.gets || {}).reduce((a, b) => a + b, 0) === 3, JSON.stringify(env.gets));
+    const end = await sendAll(w);
+    check('V12 the send gets Amazon\'s real answer: already → "Already requested", no error', label(w, id(611)) === 'Already requested' && /1 already requested/.test(end) && !/error/i.test(end), end);
   }
 
-  // V13: tapping while checks are running sends right away and stops checking
+  // V13: clicking Request Reviews answers right away (spinner) and nothing waits long
   {
     const orders = {};
     for (let i = 621; i <= 626; i++) orders[id(i)] = { age: 12, amazon: 'eligible' };
-    const env = new Env(new Site(orders), { store: S4() });
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
     const w = await ready(env, env.openList(), 6);
-    await waitFor(() => label(w, id(626)) === 'Checking…', 8000, 'checking shown');
-    btnOf(w, id(626)).click();
-    await waitFor(() => st(env, id(626)).status === 'sent' && idle(w), 60000, 'tap during check');
-    check('V13 tap during "Checking…" sends that order once', env.sends[id(626)] === 1 && env.posts[id(626)] === 1, `posts=${env.posts[id(626)]}`);
-    await sleep(500);
-    check('V13 no leftover jobs or frames', !env.store.currentJob && w.document.querySelectorAll('iframe').length === 0);
+    await sleep(1400); // lookups under way
+    launcherOf(w).click();
+    const dot = launcherOf(w).querySelector('[data-dot]');
+    check('V13 spinner shows the moment the button is clicked', launcherOf(w).getAttribute('aria-busy') === 'true' && /nudge-spin/.test(dot.style.animation), dot.style.animation);
+    await waitFor(() => idle(w) && statusText(w), 60000, 'batch');
+    check('V13 every order sent once, no leftovers', Object.keys(orders).every((k) => env.sends[k] === 1 && env.posts[k] === 1) && !env.store.currentJob && w.document.querySelectorAll('iframe').length === 0, JSON.stringify(env.posts));
   }
 
   // V14: Amazon's page says both "not eligible" and "already requested" → already
@@ -1172,7 +1184,6 @@ async function main() {
     const store = S4({ method: 'page', frameBlocked: false, switchedDay: localDay() });
     const env = new Env(new Site({ [id(631)]: { age: 12, amazon: 'alreadyNoYes' } }), { store });
     const w = await ready(env, env.openList(), 1);
-    await waitFor(() => st(env, id(631)).verifiedDay === localDay(), 30000, 'checked');
     await tap(env, w, id(631));
     check('V14 "already requested" wins over "not eligible" on Amazon\'s page', st(env, id(631)).status === 'already' && label(w, id(631)) === 'Already requested', `${st(env, id(631)).status} / ${label(w, id(631))}`);
   }
@@ -1181,7 +1192,6 @@ async function main() {
   {
     const env = new Env(new Site({ [id(641)]: { age: 12, amazon: 'eligible', reason: 'REVIEW_REQUEST_SOMETHING_NEW' } }), { store: S4() });
     const w = await ready(env, env.openList(), 1);
-    await waitFor(() => st(env, id(641)).verifiedDay === localDay(), 30000, 'checked');
     await tap(env, w, id(641));
     check('V15 unknown Amazon reason → falls back to Amazon\'s page, not "not eligible"', st(env, id(641)).status !== 'notEligible', st(env, id(641)).status + ' ' + st(env, id(641)).detail);
   }

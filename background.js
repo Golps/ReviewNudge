@@ -15,7 +15,7 @@ const CLOSE_AFTER_ORDER_AGE_DAYS = 45; // Amazon says not eligible and the order
 const FORGET_AFTER_CLOSE_DAYS = 1; // forget an order this many days after its 30-day window ends
 const FORGET_AFTER_ORDER_DAYS = 45; // …or, with no delivery estimate, this long after the order date
 const FINAL = new Set(['sent', 'already', 'skippedReturn', 'closed', 'unknown']);
-const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'eligible', 'greyed', 'skippedReturn', 'error', 'unknown']);
+const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'eligible', 'skippedReturn', 'error', 'unknown']);
 const STAGES = ['start', 'confirmPage', 'clickedYes'];
 const PAGE_OWNED = new Set(['fast', 'frame']); // jobs driven by the orders page itself
 
@@ -273,6 +273,25 @@ async function report(sender, result) {
   return true;
 }
 
+// A quick read-only lookup from the orders page (nothing was sent).
+// Only a clear answer is recorded; a finished order is never changed, except that
+// "Needs a look" is settled by it.
+async function recordCheck(msg) {
+  const { orderId, answer, orderDate, closesOn } = msg || {};
+  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '') || !['already', 'eligible'].includes(answer)) return false;
+  if (await getJob()) return false; // a send is in progress; its own answer wins
+  const { statuses = {} } = await getStored(['statuses']);
+  const prev = statuses[orderId] || {};
+  if (FINAL.has(prev.status) && prev.status !== 'unknown') return false;
+  const result =
+    answer === 'already'
+      ? { status: 'already', detail: 'Amazon says a review was already requested for this order.' }
+      : { status: 'eligible', detail: 'Amazon accepts a review request for this order.' };
+  statuses[orderId] = buildRecord(prev, orderId, result, isDay(orderDate) ? orderDate : null, false, closesOn);
+  await api.storage.local.set({ statuses: prune(statuses, orderId) });
+  return true;
+}
+
 // A return/refund spotted in the orders list itself, before anything is sent.
 async function markReturn(msg) {
   const { orderId, detail, returnKind, orderDate, closesOn } = msg || {};
@@ -333,8 +352,9 @@ async function migrate() {
     if (rec.status === 'closed' && /^It was eligible on/.test(rec.detail || '')) {
       statuses[id] = { ...rec, status: 'notEligible', checkedDay: '', detail: 'Outside Amazon\'s 5–30 day window', seenEligible: undefined, eligibleDay: undefined };
       changed = true;
-    } else if (rec.status === 'eligible' && !rec.verifiedDay) {
-      delete statuses[id]; // from the old check-only mode; never verified
+    } else if (rec.status === 'eligible' || rec.status === 'greyed') {
+      // Old check-only results and 0.8.2's greyed-button guesses: not reliable, forget them.
+      delete statuses[id];
       changed = true;
     }
   }
@@ -367,6 +387,8 @@ function handle(msg, sender) {
       return serial(() => setStage(sender, msg.stage, msg.note));
     case 'jobResult':
       return serial(() => report(sender, msg.result));
+    case 'checked':
+      return serial(() => recordCheck(msg));
     case 'markReturn':
       return serial(() => markReturn(msg));
     case 'abortJob':

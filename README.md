@@ -78,8 +78,7 @@ Most review tools ask you to connect your seller account to their servers, pay a
 | **Opens ~Oct 4** | Not eligible yet. The date is estimated from the order's delivery date + 5 days. |
 | **Sent ✓** | Amazon accepted the request. |
 | **↩ Returned · skipped** / **↩ Refunded · skipped** | Never sent. |
-| **Already requested** | A request was already sent, by you or earlier. Amazon greys out its own button in that case, and ReviewNudge reads that. |
-| **Checking…** | Asking Amazon right now. Tap to send anyway. |
+| **Already requested** | Amazon says a request already exists, sent by you, earlier, or outside ReviewNudge. |
 | **⊘ Past 30 days** | Amazon's window has closed for this order. |
 | **Error – tap** / **Needs a look** | A request really failed, or its result couldn't be confirmed. Tap for the reason. |
 

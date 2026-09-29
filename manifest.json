@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ReviewNudge",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Adds a one-click Request Reviews button to Seller Central's orders page. Follows Amazon's 5–30 day window and skips returns and refunds.",
   "homepage_url": "https://github.com/Golps/ReviewNudge",
   "icons": {

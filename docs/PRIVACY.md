@@ -24,8 +24,9 @@ Only to `sellercentral.amazon.com`, as you:
 
 1. **Manage Returns** and **Manage FBA returns**, opened in an invisible frame inside your orders page, to see which orders have a return.
 2. **Amazon's review request for an eligible order.** This is the same request Amazon's *Request a Review → Yes* button sends: the order number, the marketplace, and an empty message body.
-3. **Amazon's own order pages**, opened invisibly one at a time to read whether the Request a Review button is available or greyed out. Nothing is pressed. Only if the request above doesn't go through, ReviewNudge also opens Amazon's Request a Review page and clicks **Yes** on it, just like you would.
-4. **Amazon's Next button** on Manage Orders, to go to the next page of orders.
+3. **A read-only lookup** of that same address for orders that could be requested, to see whether a request already exists. It sends nothing.
+4. **Amazon's own order and Request a Review pages**, only if the request above doesn't go through. ReviewNudge then clicks **Yes** on Amazon's page, just like you would.
+5. **Amazon's Next button** on Manage Orders, to go to the next page of orders.
 
 Nothing is sent anywhere else.
 
@@ -50,7 +51,7 @@ The Firefox manifest declares `data_collection_permissions: none`, which is what
 
 The whole extension is [`background.js`](../background.js) and [`content/`](../content/): about 2,000 lines of plain JavaScript, no libraries, no minified code. You can:
 
-- search it for `fetch(`: the only network request is the review request to `sellercentral.amazon.com`,
+- search it for `fetch(`: the only network requests are the review request and its read-only lookup, both to `sellercentral.amazon.com`,
 - open your browser's developer tools on Seller Central and watch the Network tab during a run.
 
 ## Questions or concerns

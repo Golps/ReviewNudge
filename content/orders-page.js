@@ -15,7 +15,7 @@
 
   const GAP_MIN_MS = 3000; // pause between orders when sending the whole page
   const GAP_MAX_MS = 6000;
-  const RESULT_TIMEOUT_MS = 120000; // give up on one order after this
+  const RESULT_TIMEOUT_MS = 60000; // give up on one order after this
   const RESCAN_MS = 3000;
   const FRAME_LOAD_TIMEOUT_MS = 25000; // an Amazon page loading in the invisible frame
   const OPENS_AFTER_DELIVERY_DAYS = 5; // Amazon: requests 5–30 days after delivery
@@ -27,7 +27,7 @@
   const PAGE_SETTLE_MS = 1500; // new page must stop changing this long before it's used
   const POLL_PAGE_MS = 300;
   const RETURNS_REFRESH_MS = 15 * 60 * 1000; // re-read Manage Returns this often during a long run
-  const RETURNS_READ_TIMEOUT_MS = 180000;
+  const RETURNS_READ_TIMEOUT_MS = 90000;
   // Manage Returns (seller-fulfilled), every status, last 90 days: new layout first, classic as backup.
   const RETURN_MARKETPLACES = 'ATVPDKIKX0DER%2CA2EUQ1WTGCTBG2%2CA1AM78C64UM0Y8%2CA2Q3Y263D00KWC'; // US, CA, MX, BR
   const RETURNS_URLS = [
@@ -79,10 +79,6 @@
   const buttons = new Map(); // orderId -> pill
   const anchors = new Map(); // orderId -> the order number element
   const working = new Set();
-  const verifyPending = new Set(); // orders being confirmed with Amazon right now
-  let verifyRun = null; // the running confirm pass, if any
-  let verifyAbort = false;
-  let verifyKick = null;
   let lastStatuses = {};
   let launcher = null; // toolbar button
   let pop = null; // per-order popup (#nudge-pop)
@@ -127,18 +123,7 @@
   //   Sent ✓ / Already requested     – a request exists
   //   ↩ Returned · skipped / ⊘ Past 30 days / Needs a look
   //   Error – tap         – a send that really failed today
-  //   Checking…           – asking Amazon right now (tap to send anyway)
   function viewOf(rec, b, today) {
-    const base = baseViewOf(rec, b, today);
-    const id = b && b.dataset.nudgeId;
-    // Not yet confirmed with Amazon today: say so, rather than guess from saved data.
-    if (id && verifyPending.has(id) && !base.final && (base.kind === 'action' || base.kind === 'err' || (base.group === 'not eligible yet' && !/^Opens/.test(base.label)))) {
-      return V('Checking…', 'busy', 'checking', { batch: true, act: true, title: 'Checking with Amazon. Tap to send the request now.' });
-    }
-    return base;
-  }
-
-  function baseViewOf(rec, b, today) {
     const orderDate = b ? b.dataset.nudgeDate : '';
     const opens = b ? opensOn(b) : '';
     const notOpenYet = !!opens && opens > today;
@@ -157,11 +142,10 @@
           return V('Sent ✓', 'ok', 'sent', { final: true });
         case 'already':
           return V('Already requested', 'muted', 'already requested', { final: true });
-        case 'greyed':
-          // Amazon greyed out its own button inside the window: a request already went out.
-          // Not final: it's checked again each day, and "Request anyway" asks Amazon directly.
-          if (isPast) return past();
-          return notOpenYet ? waiting() : V('Already requested', 'muted', 'already requested', { title: "Amazon's Request a Review button is greyed out. Tap for details." });
+        case 'eligible':
+          // Amazon itself said today that it accepts a request.
+          if (rec.verifiedDay === today) return V('Request review', 'action', 'to send', { batch: true, act: true });
+          break;
         case 'skippedReturn':
           return V(rec.returnKind === 'refund' ? '↩ Refunded · skipped' : '↩ Returned · skipped', 'returned', 'returns/refunds skipped', { final: true });
         case 'closed':
@@ -197,9 +181,6 @@
     const openLine = opens && opens > today ? `Should open around ${shortDate(opens)} (5 days after delivery). ` : '';
     if (s === 'sent') return { tone: 'ok', title: '✓ Review requested', line: 'Amazon accepted the request.' };
     if (s === 'already') return { tone: 'muted', title: 'Already requested', line: 'Amazon already sent one for this order.' };
-    if (s === 'greyed' && !(opens && opens > today) && !(closesOn(b) && today > closesOn(b))) {
-      return { tone: 'muted', title: 'Already requested', line: "Amazon's Request a Review button is greyed out for this order, so a request was already sent or Amazon won't take one.", action: 'Request anyway' };
-    }
     if (s === 'skippedReturn') {
       return { tone: 'returned', title: rec.returnKind === 'refund' ? 'Refunded – skipped' : 'Returned – skipped', line: rec.detail };
     }
@@ -662,7 +643,7 @@
       }
       if (added) {
         await repaintAll();
-        kickVerify();
+        kickChecks();
       }
     } finally {
       scanning = false;
@@ -1040,119 +1021,111 @@
   }
 
   // ---------- confirming each order with Amazon ----------
-  // Saved results are only a fallback. Each order that could be requested is
-  // checked on Amazon's own order page (its Request a Review button, never pressing
-  // Yes), once a day, so a label reflects what Amazon says now.
+  // Saved results are a fallback, not the answer. Each order that could be
+  // requested is looked up once a day with a plain GET of the same Amazon
+  // address the Yes button posts to. A GET never sends anything. It's a small
+  // data request (no page load), so a whole page of orders is checked in seconds.
+  //
+  // Only a clear answer changes a label:
+  //   Amazon says a request already exists → "Already requested"
+  //   Amazon clearly says it can be sent  → stays "Request review" (confirmed)
+  // Anything else (an error, an unfamiliar reply) changes nothing, and after a
+  // few of those in a row checking is switched off for the day: the send itself
+  // gets Amazon's definite answer, in under a second per order.
+  const CHECK_GAP_MS = [350, 800];
+  const CHECK_TIMEOUT_MS = 8000;
+  const CHECK_GIVE_UP = 3; // unclear replies in a row before checking stops for today
+
   function needsCheck(id) {
     const b = buttons.get(id);
-    if (!b || !b.isConnected) return false;
+    if (!b || !b.isConnected || working.has(id)) return false;
     const today = localDay();
     const rec = lastStatuses[id];
     if (rec && ['sent', 'already', 'skippedReturn', 'closed'].includes(rec.status)) return false;
-    if (rec && (rec.verifiedDay === today || rec.checkFailedDay === today)) return false;
-    const opens = opensOn(b);
-    if (opens && opens > today) return false; // Amazon's window isn't open yet
-    const age = b.dataset.nudgeDate ? daysBetween(b.dataset.nudgeDate, today) : null;
-    if (age !== null && age < OPENS_AFTER_DELIVERY_DAYS) return false;
-    const closes = closesOn(b);
-    if ((closes && today > closes) || (age !== null && age > TOO_OLD_DAYS)) return false;
-    return !rowReturn(id);
+    if (rec && rec.verifiedDay === today) return false;
+    const v = viewOf(rec, b, today);
+    // Only orders that would be sent (or "Needs a look", which a check can settle).
+    return (v.batch || (rec && rec.status === 'unknown')) && !rowReturn(id);
   }
 
-  // Reads the Request a Review button on Amazon's own order page, in the invisible frame. Read-only.
-  async function runCheck(id, b) {
-    const t0 = Date.now();
-    const res = await send({ type: 'runJob', job: { orderId: id, url: b.dataset.nudgeUrl, dryRun: true, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null, mode: 'frame' } });
-    if (!res || !res.ok) return { skipped: true, busy: !!res && res.reason === 'busy' };
-    const target = b.dataset.nudgeUrl;
-    const frame = makeFrame();
-    const io = frameIo(frame, target);
-    let outcome;
+  // What Amazon's reply says, if anything: 'already' | 'eligible' | null.
+  function readCheck(data) {
+    if (!data || typeof data !== 'object') return null;
+    const reason = typeof data.ineligibleReason === 'string' ? data.ineligibleReason : '';
+    // Strict: Amazon's own reason code, or its exact wording. "Already requested" is final.
+    if (/ALREADY|DUPLICATE/.test(reason) || /already (?:been )?requested a review|review (?:has )?already been requested/i.test(JSON.stringify(data))) return 'already';
+    if (reason) return null; // other reasons: leave it to the send
+    const yes = [data.isEligible, data.eligible, data.canSolicit, data.isSolicitationAllowed].some((x) => x === true);
+    return yes ? 'eligible' : null;
+  }
+
+  async function checkOne(id) {
+    const url = `${location.origin}/messaging/api/solicitations/${encodeURIComponent(id)}/productReviewAndSellerFeedback?marketplaceId=${marketplaceFor(id)}&isReturn=false`;
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => ctl && ctl.abort(), CHECK_TIMEOUT_MS);
     try {
-      const first = await io.navigate(target);
-      outcome =
-        first === 'blocked'
-          ? 'blocked'
-          : await Promise.race([
-              globalThis.__nudgeDrive({ orderId: id, dryRun: true, stage: 'start' }, io),
-              sleep(RESULT_TIMEOUT_MS).then(() => 'timeout'),
-            ]);
+      const resp = await pageFetch(url, { method: 'GET', credentials: 'include', headers: { Accept: 'application/json' }, redirect: 'manual', signal: ctl ? ctl.signal : undefined });
+      if (resp.type === 'opaqueredirect' || resp.status === 0 || (resp.status >= 300 && resp.status < 400)) return { signedOut: true };
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (e) {
+        /* not JSON */
+      }
+      return { answer: readCheck(data) };
     } catch (e) {
-      await reportJob({ status: 'error', detail: `Unexpected problem: ${e && e.message}` });
+      return { answer: null };
     } finally {
-      frame.remove();
+      clearTimeout(timer);
     }
-    if (outcome === 'blocked') {
-      await rememberFrameBlocked(); // Amazon won't show its page in a frame: no automatic checks today
-      await send({ type: 'cancelJob', orderId: id });
-      return { blocked: true };
-    }
-    if (outcome === 'timeout') await send({ type: 'abortJob', orderId: id });
-    return { rec: await waitForResult(id, t0) };
   }
 
-  const nap = async (ms) => {
-    for (const end = Date.now() + ms; Date.now() < end && !verifyAbort; ) await sleep(200);
-  };
+  let checkRun = null;
+  let checkStop = false;
+  let checkKick = null;
+  let checkOffDay = ''; // checking gave nothing useful today: don't keep asking
 
-  async function verifyAll() {
-    if (busy || verifyRun || settings.frameBlocked) return;
+  async function checkAll() {
+    if (busy || checkRun || checkOffDay === localDay()) return;
     const ids = pageIds().filter(needsCheck);
     if (!ids.length) return;
-    verifyAbort = false;
+    checkStop = false;
     const run = (async () => {
-      try {
-        ids.forEach((id) => verifyPending.add(id));
-        await repaintAll();
-        // Returned orders are ruled out first, so none shows "Request review".
-        const ret = await ensureReturns();
-        if (ret.blocked) {
-          attention = true;
-          notice(`${ret.why} while reading Manage Returns, so ReviewNudge paused checking.`, 'err');
-          return;
+      let unclear = 0;
+      for (let i = 0; i < ids.length && !checkStop && !busy; i++) {
+        const id = ids[i];
+        if (!needsCheck(id)) continue;
+        const b = buttons.get(id);
+        const r = await checkOne(id);
+        if (r.signedOut) break; // Seller Central wants a sign-in; the orders page will show it
+        if (r.answer) {
+          unclear = 0;
+          await send({ type: 'checked', orderId: id, answer: r.answer, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
+        } else if (++unclear >= CHECK_GIVE_UP) {
+          checkOffDay = localDay();
+          break;
         }
-        let fails = 0;
-        for (let i = 0; i < ids.length; i++) {
-          const id = ids[i];
-          if (verifyAbort || busy) break;
-          if (!needsCheck(id)) {
-            verifyPending.delete(id);
-            continue;
-          }
-          const r = await runCheck(id, buttons.get(id));
-          verifyPending.delete(id);
-          if (r.blocked || r.busy) break;
-          const rec = r.rec;
-          if (rec && rec.checkFatal) {
-            attention = true;
-            notice(`${rec.checkNote || 'Amazon needs you'}, so ReviewNudge paused checking.`, 'err');
-            break;
-          }
-          fails = rec && rec.verifiedDay === localDay() ? 0 : fails + 1;
-          if (fails >= 2) break; // can't reach Amazon's page: keep saved labels, say nothing
-          await repaintAll();
-          if (i < ids.length - 1 && !verifyAbort) await nap(rand(GAP_MIN_MS, GAP_MAX_MS));
-        }
-      } finally {
-        verifyPending.clear();
-        if (verifyRun === run) verifyRun = null;
-        await repaintAll();
+        if (i < ids.length - 1) await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
       }
-    })();
-    verifyRun = run;
+    })().finally(() => {
+      if (checkRun === run) checkRun = null;
+    });
+    checkRun = run;
+    await run.catch(() => {});
+    await repaintAll();
   }
 
-  async function stopVerify() {
-    verifyAbort = true;
-    const run = verifyRun;
-    if (run) await run.catch(() => {});
+  // Waits for at most the one lookup in flight (a fraction of a second).
+  async function stopChecks() {
+    clearTimeout(checkKick);
+    checkStop = true;
+    if (checkRun) await checkRun.catch(() => {});
   }
 
-  // A moment after the page settles, and again after each run.
-  function kickVerify(ms = 2500) {
-    clearTimeout(verifyKick);
-    verifyKick = setTimeout(() => {
-      verifyAll().catch(() => {});
+  function kickChecks(ms = 1200) {
+    clearTimeout(checkKick);
+    checkKick = setTimeout(() => {
+      checkAll().catch(() => {});
     }, ms);
   }
 
@@ -1189,14 +1162,8 @@
     if (busy) return notice('Busy – wait for the current order to finish.', 'info');
     const b = buttons.get(id);
     if (!b) return;
-    if (verifyRun) {
-      // Let the check in flight finish, so the two never overlap.
-      working.add(id);
-      paintOne(b);
-      await stopVerify();
-      working.delete(id);
-      if (busy) return notice('Busy – wait for the current order to finish.', 'info');
-    }
+    await stopChecks(); // at most one quick lookup in flight
+    if (busy) return;
     const { statuses = {} } = await get(['statuses']);
     lastStatuses = statuses;
     if (viewOf(statuses[id], b, localDay()).final) return openPop(id);
@@ -1208,7 +1175,7 @@
     } finally {
       busy = false;
       renderLauncher();
-      kickVerify(8000);
+      kickChecks(3000);
     }
     setStatus(`Order ${id}: ${viewOf(rec.checkedDay ? rec : { ...rec, checkedDay: localDay() }, b, localDay()).label}`);
     announce(id, rec, true);
@@ -1356,7 +1323,7 @@
     let page = 1;
     let pagesNote = '';
     try {
-      await stopVerify(); // a confirm pass in flight finishes first
+      await stopChecks(); // at most one quick lookup in flight
       for (;;) {
         await scan();
         const { statuses = {} } = await get(['statuses']);
@@ -1425,7 +1392,7 @@
       setStatus(text);
       if (!stopReason || stopReason === 'Stopped.') notice(text, tally.sent ? 'ok' : 'info', null, true);
       renderLauncher();
-      kickVerify(8000);
+      kickChecks(3000);
     }
   }
 

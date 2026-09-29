@@ -10,7 +10,7 @@
   const api = globalThis.browser ?? globalThis.chrome;
 
   const POLL_MS = 400;
-  const BUTTON_WAIT_MS = 15000; // wait this long for the order page's button
+  const BUTTON_WAIT_MS = 10000; // wait this long for the order page's button
   const STAGE_TIMEOUT_MS = 30000; // wait this long on Amazon's review page
   const SETTLE_MS = 3000; // don't trust a "not eligible" message until the page has settled
   const STEP_DELAY_MIN_MS = 1500; // human-like pause before each step
@@ -252,15 +252,6 @@
         const ret = findReturn(pageText(d2, true));
         if (ret) return io.report({ status: 'skippedReturn', detail: `Order page says "${ret}".`, returnKind: returnKindOf(ret) });
         if (req && req.visible && isDisabled(req.el)) greyed = true;
-
-        if (job.dryRun) {
-          // Check-only: the order page's own Request a Review button says what
-          // Amazon will accept right now. Amazon's review page always offers Yes,
-          // even for an order that already has a request, so it can't be used to check.
-          if (!req || !req.visible) return io.report({ status: 'error', detail: "The order page has no Request a Review button to read." });
-          if (greyed) return io.report({ status: 'greyed', detail: "Amazon's Request a Review button is greyed out for this order." });
-          return io.report({ status: 'eligible', detail: "Amazon's Request a Review button is available." });
-        }
 
         if (!greyed && !io.frame && req && !req.href && req.visible && !job.dryRun) {
           // A script button (no link) in a tab: click it, the way you would.

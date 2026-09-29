@@ -42,7 +42,7 @@ ReviewNudge is a standard **Manifest V3 WebExtension**. The same folder loads un
 ## A run, step by step
 
 1. **Scan.** Order numbers are found on Manage Orders (links, plain text or Amazon's shadow-DOM cards), and a label is placed under each one.
-2. **Confirm.** After Manage Returns is read, orders that could be requested are checked against Amazon (see below), so each label is current.
+2. **Confirm.** Orders that could be requested are looked up on Amazon (see below), so each label is current.
 3. **Plan.** Every order whose label says **Request review** is queued.
 4. **Returns.** Before the first send, Manage Returns is read in an invisible frame (see below). Matching orders become **↩ Returned · skipped**.
 5. **Send**, one order at a time, with a random 3–6 second pause between orders.
@@ -67,23 +67,20 @@ Amazon allows a request from **5 to 30 days after delivery**, not after the orde
 
 ## Confirming each order with Amazon
 
-A label is only as good as its source, so saved results are a fallback, not the answer. When the orders page opens, and again after each run, every order that could be requested and hasn't been confirmed **today** is checked:
+Saved results are a fallback, not the answer. When Manage Orders opens, and again after each run, every order that would be sent (or shows **Needs a look**) and hasn't been looked up **today** gets one quick, read-only lookup:
 
-1. The order's own page on Amazon is loaded in an invisible frame, one order at a time, 3–6 seconds apart.
-2. ReviewNudge reads that page's **Request a Review** button. It never presses it.
-3. The result is stored for the day:
+- a `GET` of the same address Amazon's **Yes** button posts to (`/messaging/api/solicitations/{order}/productReviewAndSellerFeedback`). A GET only reads; nothing is sent, no page is opened, nothing is clicked;
+- one order at a time, 0.35–0.8 seconds apart, so a page of 100 orders takes about a minute in the background.
 
-| Amazon's button | Label |
+Only a clear answer changes a label:
+
+| Amazon's reply | Label |
 |---|---|
-| Available | **Request review** |
-| Greyed out, inside the estimated window | **Already requested** (tap for details; **Request anyway** asks Amazon directly) |
-| The page mentions a return or refund | **↩ Returned · skipped** |
+| A request already exists | **Already requested** (final) |
+| It can be sent | **Request review** |
+| Anything else | unchanged |
 
-An order that already shows **Sent ✓** or **Already requested** from Amazon's own answer is never checked again. Orders whose window hasn't opened, or has closed, are not checked at all. While a check is running the label shows **Checking…**, and tapping it sends immediately.
-
-**A check that can't run says nothing.** If Amazon's page won't load, or shows no button, the saved label stays and nothing turns red. After two failures in a row, checking stops for that visit. A CAPTCHA or sign-in page pauses it with a notice.
-
-Amazon's review page itself isn't used for checking: it offers **Yes** even for orders that already have a request, and only answers after Yes.
+After three unclear replies in a row, lookups stop for the day. That's fine: the send itself returns Amazon's definite answer in under a second, and an order that turns out to be already requested simply shows **Already requested**, never an error. Orders whose window hasn't opened, or has closed, are never looked up.
 
 ## Skipping returns and refunds
 
