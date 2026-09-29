@@ -30,7 +30,7 @@
 
 ## See it in action
 
-<img src="docs/images/demo.gif" alt="ReviewNudge checking returns, sending review requests one at a time, moving to page 2 and showing a summary" width="100%">
+<img src="docs/media/ReviewNudge-overview-compressed.gif" alt="ReviewNudge checking returns, sending review requests one at a time, moving to page 2 and showing a summary" width="100%">
 
 <sub>All orders, products and returns shown are made up. The full overview with sound is <a href="#watch-the-1-minute-overview">below</a>.</sub>
 
@@ -251,7 +251,7 @@ ReviewNudge/            ← this folder is the extension (load it in any browser
 ├── icons/
 ├── tests/              simulated Seller Central (fake browser, fake Amazon pages)
 ├── scripts/            package.sh · make-icons.py
-├── docs/               HOW-IT-WORKS.md · PRIVACY.md · images
+├── docs/               HOW-IT-WORKS.md · PRIVACY.md · images/ (screenshots) · media/ (overview video, full and compressed)
 └── assets/             full-size logo
 ```
 
