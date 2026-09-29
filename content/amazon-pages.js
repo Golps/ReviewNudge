@@ -191,8 +191,8 @@
     return null;
   }
 
-  const reviewPageUrl = (orderId, base) =>
-    `${new URL(base).origin}/messaging/reviews?orderId=${encodeURIComponent(orderId)}&marketplaceId=${US_MARKETPLACE_ID}`;
+  const reviewPageUrl = (orderId, base, marketplaceId) =>
+    `${new URL(base).origin}/messaging/reviews?orderId=${encodeURIComponent(orderId)}&marketplaceId=${marketplaceId || US_MARKETPLACE_ID}`;
 
   function blocker(doc, url, text) {
     let path = '';
@@ -214,6 +214,11 @@
     let stage = job.stage;
     let stageStart = Date.now();
     let negSeen = 0;
+    // Amazon greys the order page's Request a Review button both when a request
+    // was already sent and when the window isn't open. The button alone can't tell
+    // them apart, so a greyed button is never a verdict: Amazon's review page is
+    // read for the actual reason.
+    let greyed = false;
     const lostContact = () =>
       io.report({ status: 'error', fatal: true, detail: 'Lost contact with the extension. Nothing was sent.' });
 
@@ -246,11 +251,18 @@
         }
         const ret = findReturn(pageText(d2, true));
         if (ret) return io.report({ status: 'skippedReturn', detail: `Order page says "${ret}".`, returnKind: returnKindOf(ret) });
-        if (req && req.visible && isDisabled(req.el)) {
-          return io.report({ status: 'notEligible', detail: "Amazon's Request a Review button is greyed out for this order." });
+        if (req && req.visible && isDisabled(req.el)) greyed = true;
+
+        if (job.dryRun) {
+          // Check-only: the order page's own Request a Review button says what
+          // Amazon will accept right now. Amazon's review page always offers Yes,
+          // even for an order that already has a request, so it can't be used to check.
+          if (!req || !req.visible) return io.report({ status: 'error', detail: "The order page has no Request a Review button to read." });
+          if (greyed) return io.report({ status: 'greyed', detail: "Amazon's Request a Review button is greyed out for this order." });
+          return io.report({ status: 'eligible', detail: "Amazon's Request a Review button is available." });
         }
 
-        if (!io.frame && req && !req.href && req.visible && !job.dryRun) {
+        if (!greyed && !io.frame && req && !req.href && req.visible && !job.dryRun) {
           // A script button (no link) in a tab: click it, the way you would.
           if (!(await io.setStage('confirmPage'))) return lostContact();
           stage = 'confirmPage';
@@ -264,7 +276,7 @@
         let target = req && req.href;
         let note = '';
         if (!target) {
-          target = reviewPageUrl(job.orderId, url);
+          target = reviewPageUrl(job.orderId, url, job.marketplaceId);
           if (!req) note = "(No Request a Review button on the order page, so Amazon's review page was opened directly.)";
         }
         if (!(await io.setStage('confirmPage', note))) return lostContact();
@@ -300,13 +312,17 @@
           continue;
         }
         if (!canYes) {
-          const neg = INELIGIBLE.test(text) ? 'notEligible' : ALREADY.test(text) ? 'already' : null;
+          // "Already requested" wins over "not eligible": Amazon's page can say both.
+          const neg = ALREADY.test(text) ? 'already' : INELIGIBLE.test(text) ? 'notEligible' : null;
           if (neg && Date.now() - stageStart >= SETTLE_MS && ++negSeen >= 2) {
-            return io.report({ status: neg, detail: quote(text, neg === 'notEligible' ? INELIGIBLE : ALREADY) });
+            return io.report({ status: neg, detail: quote(text, neg === 'already' ? ALREADY : INELIGIBLE) });
           }
           if (!neg) negSeen = 0;
         }
         if (Date.now() - stageStart > STAGE_TIMEOUT_MS) {
+          if (greyed) {
+            return io.report({ status: 'notEligible', detail: "Amazon's Request a Review button is greyed out for this order." });
+          }
           return io.report({
             status: 'error',
             detail: "Amazon's Request a Review page didn't show a Yes button or an eligibility message.",

@@ -74,13 +74,14 @@ Most review tools ask you to connect your seller account to their servers, pay a
 
 | Label | Meaning |
 |---|---|
-| **Request review** | Should be eligible now. Tap it to send just that order. |
+| **Request review** | Amazon accepts a request now. Tap it to send just that order. |
 | **Opens ~Oct 4** | Not eligible yet. The date is estimated from the order's delivery date + 5 days. |
 | **Sent ✓** | Amazon accepted the request. |
 | **↩ Returned · skipped** / **↩ Refunded · skipped** | Never sent. |
-| **Already requested** | Amazon says a request was already sent (by you, or earlier). |
+| **Already requested** | A request was already sent, by you or earlier. Amazon greys out its own button in that case, and ReviewNudge reads that. |
+| **Checking…** | Asking Amazon right now. Tap to send anyway. |
 | **⊘ Past 30 days** | Amazon's window has closed for this order. |
-| **Error – tap** / **Needs a look** | Something went wrong. Tap for the reason. |
+| **Error – tap** / **Needs a look** | A request really failed, or its result couldn't be confirmed. Tap for the reason. |
 
 There are no settings and no menus. Tapping any label explains it.
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+- **Labels are confirmed with Amazon, not just remembered.** Once a day, each order that could be requested is checked against the Request a Review button on Amazon's own order page (read only, never pressing Yes). Saved results are the fallback, so an order that was already requested, outside the extension or in an earlier session, now says **Already requested** instead of **Request review**.
+- **One label for "ready".** *Eligible*, *Try again* and *Request review* were three names for the same thing. It's now just **Request review**.
+- **Error means error.** **Error – tap** only appears when a request really failed today. A check that can't load Amazon's page says nothing and leaves the saved label alone.
+- A greyed-out Request a Review button is no longer reported as "not eligible": Amazon greys it out when a request was already sent, too.
+- When Amazon's page says both "not eligible" and "already requested", **Already requested** wins.
+- A reason from Amazon that ReviewNudge doesn't recognize is never guessed at: it reads Amazon's page for the real answer instead.
+- **Needs a look** clears itself once Amazon shows the order as already requested, or offers the button again.
+- While a check is running, the label shows **Checking…**. Tap it to send right away.
+
 ## 0.8.1
 
 - **FBA returns are now skipped too.** After the seller-fulfilled list, ReviewNudge reads Manage FBA returns, by return authorized date when the page offers it, otherwise over the widest date range.

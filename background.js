@@ -15,7 +15,7 @@ const CLOSE_AFTER_ORDER_AGE_DAYS = 45; // Amazon says not eligible and the order
 const FORGET_AFTER_CLOSE_DAYS = 1; // forget an order this many days after its 30-day window ends
 const FORGET_AFTER_ORDER_DAYS = 45; // …or, with no delivery estimate, this long after the order date
 const FINAL = new Set(['sent', 'already', 'skippedReturn', 'closed', 'unknown']);
-const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'eligible', 'skippedReturn', 'error', 'unknown']);
+const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'eligible', 'greyed', 'skippedReturn', 'error', 'unknown']);
 const STAGES = ['start', 'confirmPage', 'clickedYes'];
 const PAGE_OWNED = new Set(['fast', 'frame']); // jobs driven by the orders page itself
 
@@ -73,6 +73,11 @@ function buildRecord(prev, orderId, result, orderDate, dryRun, closesOn) {
   };
   if (orderDate) rec.orderDate = orderDate;
   if (isDay(closesOn)) rec.closesOn = closesOn;
+  // Amazon itself answered today (not a load failure): today's label can be trusted.
+  if (result.status !== 'error') rec.verifiedDay = day;
+  delete rec.checkFailedDay;
+  delete rec.checkNote;
+  delete rec.checkFatal;
   if (result.status === 'skippedReturn') rec.returnKind = result.returnKind === 'refund' ? 'refund' : 'return';
   if (result.status === 'notEligible') {
     rec.firstIneligibleDay = prev.firstIneligibleDay || day;
@@ -95,7 +100,17 @@ async function recordResult(job, result) {
   const prev = statuses[job.orderId] || {};
   let rec;
   let changed = true;
-  if (FINAL.has(prev.status)) {
+  // "Needs a look" means we pressed Yes and never saw Amazon's answer. A later
+  // check-only read settles it: Amazon says "already requested" (so it went
+  // through), or offers Yes again (so it never did).
+  const settlesUnknown = job.dryRun && prev.status === 'unknown' && (result.status === 'already' || result.status === 'eligible');
+  if (job.dryRun && result.status === 'error') {
+    // A check that couldn't load says nothing about the order: keep what we knew.
+    rec = { ...prev, checkedAt: Date.now(), checkFailedDay: day, checkNote: result.detail, checkFatal: !!result.fatal };
+    if (job.orderDate) rec.orderDate = job.orderDate;
+    if (isDay(job.closesOn)) rec.closesOn = job.closesOn;
+    changed = false;
+  } else if (FINAL.has(prev.status) && !settlesUnknown) {
     // Never change a finished order. Just note that it was looked at.
     rec = { ...prev, checkedAt: Date.now(), lastNote: result.detail };
     changed = false;
@@ -318,8 +333,8 @@ async function migrate() {
     if (rec.status === 'closed' && /^It was eligible on/.test(rec.detail || '')) {
       statuses[id] = { ...rec, status: 'notEligible', checkedDay: '', detail: 'Outside Amazon\'s 5–30 day window', seenEligible: undefined, eligibleDay: undefined };
       changed = true;
-    } else if (rec.status === 'eligible') {
-      delete statuses[id];
+    } else if (rec.status === 'eligible' && !rec.verifiedDay) {
+      delete statuses[id]; // from the old check-only mode; never verified
       changed = true;
     }
   }

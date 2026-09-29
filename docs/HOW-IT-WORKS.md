@@ -8,6 +8,7 @@ A technical walkthrough for anyone who wants to check the logic before trusting 
 2. [The pieces](#the-pieces)
 3. [A run, step by step](#a-run-step-by-step)
 4. [Estimating the 5–30 day window](#estimating-the-530-day-window)
+   - [Confirming each order with Amazon](#confirming-each-order-with-amazon)
 5. [Skipping returns and refunds](#skipping-returns-and-refunds)
 6. [Sending a request](#sending-a-request)
 7. [Never sending twice](#never-sending-twice)
@@ -41,11 +42,12 @@ ReviewNudge is a standard **Manifest V3 WebExtension**. The same folder loads un
 ## A run, step by step
 
 1. **Scan.** Order numbers are found on Manage Orders (links, plain text or Amazon's shadow-DOM cards), and a label is placed under each one.
-2. **Plan.** Every order whose label says **Request review** or **Try again** is queued.
-3. **Returns.** Before the first send, Manage Returns is read in an invisible frame (see below). Matching orders become **↩ Returned · skipped**.
-4. **Send**, one order at a time, with a random 3–6 second pause between orders.
-5. **Next page.** When the page is done, Amazon's **Next** button is clicked, unless the page already reached orders past the 30-day window.
-6. **Summary.** For example:
+2. **Confirm.** After Manage Returns is read, orders that could be requested are checked against Amazon (see below), so each label is current.
+3. **Plan.** Every order whose label says **Request review** is queued.
+4. **Returns.** Before the first send, Manage Returns is read in an invisible frame (see below). Matching orders become **↩ Returned · skipped**.
+5. **Send**, one order at a time, with a random 3–6 second pause between orders.
+6. **Next page.** When the page is done, Amazon's **Next** button is clicked, unless the page already reached orders past the 30-day window.
+7. **Summary.** For example:
    > **Done.**<br>Sent 63 · 2 returns/refunds skipped · 1 already requested.<br>Next batch: Sep 29 (4 orders), then Oct 1 (3 orders).
 
 ## Estimating the 5–30 day window
@@ -62,6 +64,26 @@ Amazon allows a request from **5 to 30 days after delivery**, not after the orde
 - **Opens** = delivery + 5 days. Before that the label shows **Opens ~date**.
 - **Closes** = delivery + 30 days. After that, or when an order is more than 45 days old, the label shows **⊘ Past 30 days**.
 - If Amazon still says "not eligible", the order shows **Not eligible yet** and is tried again the next day. It's never marked closed just because Amazon said no once.
+
+## Confirming each order with Amazon
+
+A label is only as good as its source, so saved results are a fallback, not the answer. When the orders page opens, and again after each run, every order that could be requested and hasn't been confirmed **today** is checked:
+
+1. The order's own page on Amazon is loaded in an invisible frame, one order at a time, 3–6 seconds apart.
+2. ReviewNudge reads that page's **Request a Review** button. It never presses it.
+3. The result is stored for the day:
+
+| Amazon's button | Label |
+|---|---|
+| Available | **Request review** |
+| Greyed out, inside the estimated window | **Already requested** (tap for details; **Request anyway** asks Amazon directly) |
+| The page mentions a return or refund | **↩ Returned · skipped** |
+
+An order that already shows **Sent ✓** or **Already requested** from Amazon's own answer is never checked again. Orders whose window hasn't opened, or has closed, are not checked at all. While a check is running the label shows **Checking…**, and tapping it sends immediately.
+
+**A check that can't run says nothing.** If Amazon's page won't load, or shows no button, the saved label stays and nothing turns red. After two failures in a row, checking stops for that visit. A CAPTCHA or sign-in page pauses it with a notice.
+
+Amazon's review page itself isn't used for checking: it offers **Yes** even for orders that already have a request, and only answers after Yes.
 
 ## Skipping returns and refunds
 
@@ -80,7 +102,7 @@ The lists are re-read every 15 minutes during long runs.
 
 ReviewNudge only ever sends **Amazon's own Request a Review**, the fixed message Amazon writes. It tries three ways, in order:
 
-1. **Quick send.** The same request Amazon's **Yes** button makes: `POST /messaging/api/solicitations/{order}/productReviewAndSellerFeedback?marketplaceId=…` with an empty body and the page's own security token. Amazon's answer is read directly: success, *already sent*, or *outside the time window*.
+1. **Quick send.** The same request Amazon's **Yes** button makes: `POST /messaging/api/solicitations/{order}/productReviewAndSellerFeedback?marketplaceId=…` with an empty body and the page's own security token. Amazon's answer is read directly: success, *already sent*, or *outside the time window*. Any other reason is not guessed at: the order goes through Amazon's page instead, where the wording is read (*already requested* wins over *not eligible*).
 2. **Amazon's page, invisibly.** If the quick send is refused, ReviewNudge opens the order's page and Amazon's Request a Review page in an invisible frame and clicks **Yes**, exactly as you would.
 3. **Amazon's page in a background tab**, if the browser won't show Amazon's page in a frame.
 
@@ -92,7 +114,7 @@ The marketplace (US, Canada, Mexico or Brazil) comes from each order's *Sales ch
 
 Every order runs as a **job** in the background script with three stages: `start → confirmPage → clickedYes`. The stage is saved to storage **before** the request goes out.
 
-- If anything goes wrong **before** `clickedYes`, nothing was sent. The order shows **Error – tap** and can be retried.
+- If anything goes wrong **before** `clickedYes`, nothing was sent. The order shows **Error – tap** and can be retried. That label only appears when a request really failed; a failed *check* never sets it.
 - If anything goes wrong **after** `clickedYes` (for example the tab closes before Amazon answers), the order is marked **Needs a look** and never retried automatically.
 - Only one job can run at a time, even across several Seller Central tabs.
 

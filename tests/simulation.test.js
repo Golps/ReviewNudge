@@ -278,6 +278,8 @@ class Site {
       html = `${intro}<p>Are you sure you want to request a review for this order?</p><div id="yn"><kat-button id="yes" label="Yes"></kat-button><kat-button id="no" label="No"></kat-button></div>`;
     } else if (kind === 'eligibleSlow') {
       html = `${intro}<p>Orders outside the delivery window are not eligible.</p><div id="yn"></div>`;
+    } else if (kind === 'alreadyNoYes') {
+      html = `<h1>Request a Review</h1><kat-alert variant="warning" header="Not eligible at this time" description="You can't use this feature to request a review. You have already requested a review for this order."></kat-alert>`;
     } else if (kind === 'notEligibleNoYes') {
       html = `<h1>Request a Review</h1><kat-alert variant="warning" header="Not eligible at this time" description="You can't use this feature to request a review outside the 5-30 day range after the order delivery date."></kat-alert>`;
     } else {
@@ -540,7 +542,8 @@ class Env {
     if (o.api === 'redirect') return { type: 'opaqueredirect', status: 0, json: async () => { throw new Error('none'); } };
     if (o.api === 'throw') throw new TypeError('Load failed');
     const kind = o.amazon || 'eligible';
-    if (this.sends[id] || kind === 'already') return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_ALREADY_SENT' });
+    if (o.reason) return json(200, { isSuccess: false, ineligibleReason: o.reason });
+    if (this.sends[id] || kind === 'already' || kind === 'alreadyNoYes') return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_ALREADY_SENT' });
     if (kind === 'notEligible' || kind === 'notEligibleNoYes') return json(200, { isSuccess: false, ineligibleReason: 'REVIEW_REQUEST_OUTSIDE_TIME_WINDOW' });
     if (kind === 'blank') return { type: 'basic', status: 500, json: async () => { throw new Error('html'); } };
     this.sends[id] = 1;
@@ -706,7 +709,7 @@ async function main() {
     check('B4 on Manage Returns → "↩ Returned · skipped", nothing sent', label(w, id(6)) === '↩ Returned · skipped' && !(env.posts || {})[id(6)] && popTitle(w) === 'Returned – skipped', `${label(w, id(6))} / ${popTitle(w)}`);
   }
 
-  // B5: v0.3's wrongly-closed orders are repaired; "not eligible" → "Try again" the next day
+  // B5: v0.3's wrongly-closed orders are repaired; "not eligible" → "Request review" the next day
   {
     const y = localDay(daysAgo(1));
     const store = S4();
@@ -716,14 +719,14 @@ async function main() {
     };
     const env = new Env(new Site({ [id(7)]: { age: 12, amazon: 'notEligible' }, [id(8)]: { age: 12, amazon: 'eligible' } }), { store });
     const w = await ready(env, env.openList(), 2);
-    await waitFor(() => label(w, id(7)) === 'Try again', 2000, 'repair').catch(() => {});
-    check('B5 wrongly "Window closed" order is reopened ("Try again")', label(w, id(7)) === 'Try again' && label(w, id(8)) === 'Request review', `${label(w, id(7))} / ${label(w, id(8))}`);
+    await waitFor(() => label(w, id(7)) === 'Request review', 2000, 'repair').catch(() => {});
+    check('B5 wrongly "Window closed" order is reopened ("Request review")', label(w, id(7)) === 'Request review' && label(w, id(8)) === 'Request review', `${label(w, id(7))} / ${label(w, id(8))}`);
     await tap(env, w, id(7));
     check('B5 Amazon still says no → "Not eligible yet" (not closed) + popup', st(env, id(7)).status === 'notEligible' && label(w, id(7)) === 'Not eligible yet' && popTitle(w) === 'Not eligible yet', label(w, id(7)));
     env.store.statuses[id(7)].checkedDay = y;
     env.site.orders[id(7)].amazon = 'eligible';
     const w2 = await ready(env, env.openList(), 2);
-    check('B5 next day it says "Try again"', label(w2, id(7)) === 'Try again', label(w2, id(7)));
+    check('B5 next day it says "Request review"', label(w2, id(7)) === 'Request review', label(w2, id(7)));
     await tap(env, w2, id(7));
     check('B5 and sends once Amazon allows it', st(env, id(7)).status === 'sent');
   }
@@ -875,7 +878,7 @@ async function main() {
     check('B16 Yes then "not eligible" → Not eligible yet (retry tomorrow)', st(env, id(111)).status === 'notEligible' && env.yesClicks[id(111)] === 1);
   }
 
-  // B17: error pill → "Try again" in the popup
+  // B17: error pill → "Request review" in the popup
   {
     const orders = { [id(121)]: { age: 12, amazon: 'blank' } };
     const env = new Env(new Site(orders), { store: S4() });
@@ -885,7 +888,7 @@ async function main() {
     orders[id(121)].amazon = 'eligible';
     popOf(w).querySelector('.nudge-pop-action').click();
     await waitFor(() => st(env, id(121)).status === 'sent' && idle(w), 10000, 'retry');
-    check('B17 "Try again" sends it', label(w, id(121)) === 'Sent ✓');
+    check('B17 "Request review" in the popup sends it', label(w, id(121)) === 'Sent ✓');
   }
 
   // B18: nothing to send → says so, and what's coming up
@@ -1091,6 +1094,96 @@ async function main() {
     const end = await sendAll(w);
     check('C5 Request Reviews only sends the ones that should be open', env.sends[id(205)] === 1 && env.sends[id(206)] === 1 && Object.keys(env.posts).length === 2, JSON.stringify(env.posts));
     check('C5 no "eligible, then not eligible" surprises', !Object.values(env.store.statuses || {}).some((r) => r.status === 'notEligible'), end);
+  }
+
+
+  // V: every label is confirmed with Amazon's own button; saved results are only a fallback
+  {
+    const today = localDay();
+    const y = localDay(daysAgo(1));
+    const store = S4();
+    store.statuses = {
+      [id(603)]: { status: 'error', detail: 'Timed out waiting for Amazon.', checkedDay: today, checkedAt: Date.now() },
+      [id(604)]: { status: 'notEligible', detail: "Outside Amazon's 5–30 day window", checkedDay: y, checkedAt: Date.now() - 86400000, firstIneligibleDay: y },
+      [id(605)]: { status: 'unknown', detail: "Couldn't confirm it went through.", checkedDay: y, checkedAt: Date.now() - 86400000 },
+      [id(606)]: { status: 'eligible', checkedDay: y, checkedAt: Date.now() - 86400000 },
+    };
+    const orders = {
+      [id(601)]: { age: 12, req: 'disabled', amazon: 'already' }, // requested outside the extension: button greyed
+      [id(602)]: { age: 12, amazon: 'eligible' },
+      [id(603)]: { age: 12, amazon: 'eligible' },
+      [id(604)]: { age: 12, amazon: 'eligible' },
+      [id(605)]: { age: 12, amazon: 'eligible' },
+      [id(606)]: { age: 12, req: 'disabled', amazon: 'already' }, // was "eligible" yesterday, sent since
+    };
+    const env = new Env(new Site(orders), { store });
+    const w = await ready(env, env.openList(), 6);
+    await waitFor(() => Object.keys(orders).every((k) => st(env, k).verifiedDay === today), 90000, 'all orders confirmed').catch(() => {});
+    const L = (n) => label(w, id(n));
+    check('V1 already requested outside the extension → "Already requested" without a tap', L(601) === 'Already requested' && st(env, id(601)).status === 'greyed', `${L(601)} ${st(env, id(601)).status}`);
+    check('V2 available button → "Request review", nothing sent while checking', L(602) === 'Request review' && !env.sends[id(602)] && !env.posts && !Object.keys(env.yesClicks).length, L(602));
+    check('V3 a saved error is replaced by what Amazon says now', L(603) === 'Request review' && st(env, id(603)).status === 'eligible', `${L(603)} ${st(env, id(603)).status}`);
+    check('V4 yesterday\'s "not eligible" is not shown as "Try again" or "ineligible"', L(604) === 'Request review', L(604));
+    check('V5 "Needs a look" settles once Amazon offers the button again', L(605) === 'Request review' && st(env, id(605)).status === 'eligible', `${L(605)} ${st(env, id(605)).status}`);
+    check('V6 yesterday\'s "eligible" is not trusted: Amazon has it greyed → "Already requested"', L(606) === 'Already requested', L(606));
+    check('V7 no red error pills and no "Try again" anywhere', !Object.keys(orders).some((k) => /Error|Try again|eligible$/i.test(label(w, k)) && !/^Not eligible yet$/.test(label(w, k))), Object.keys(orders).map((k) => label(w, k)).join(' | '));
+    check('V8 one order-page read per order, once', Object.keys(orders).every((k) => env.visits[k] === 1), JSON.stringify(env.visits));
+    // Tap on the greyed one: explained, and "Request anyway" asks Amazon directly.
+    btnOf(w, id(601)).click();
+    await sleep(80);
+    check('V9 tapping "Already requested" explains why', popTitle(w) === 'Already requested' && /greyed out/.test(popOf(w).querySelector('.nudge-pop-line').textContent), popTitle(w));
+    popOf(w).querySelector('.nudge-pop-action').click();
+    await waitFor(() => st(env, id(601)).status === 'already' && idle(w), 15000, 'request anyway');
+    check('V10 "Request anyway" gets Amazon\'s own answer → final "Already requested"', L(601) === 'Already requested' && env.posts[id(601)] === 1 && !env.sends[id(601)], `${L(601)} posts=${env.posts[id(601)]}`);
+    // Reload: the confirmed labels come straight from storage, no second read today.
+    const before = JSON.stringify(env.visits);
+    const w2 = await ready(env, env.openList(), 6);
+    await sleep(3500);
+    check('V11 same day reload → same labels, no new reads', label(w2, id(602)) === 'Request review' && label(w2, id(601)) === 'Already requested' && JSON.stringify(env.visits) === before, JSON.stringify(env.visits));
+  }
+
+  // V12: a check that can't load is not an error: the saved label stays, nothing red
+  {
+    const store = S4();
+    store.statuses = { [id(611)]: { status: 'notEligible', detail: 'Amazon: not open', checkedDay: localDay(daysAgo(1)), checkedAt: Date.now() - 86400000, firstIneligibleDay: localDay(daysAgo(1)) } };
+    const env = new Env(new Site({ [id(611)]: { age: 12, req: 'none', amazon: 'eligible' } }), { store });
+    const w = await ready(env, env.openList(), 1);
+    await waitFor(() => st(env, id(611)).checkFailedDay === localDay(), 60000, 'check gives up');
+    await sleep(200);
+    check('V12 unreadable order page → saved label kept, no error pill', label(w, id(611)) === 'Request review' && st(env, id(611)).status === 'notEligible' && !/Error/.test(label(w, id(611))), `${label(w, id(611))} ${st(env, id(611)).status}`);
+  }
+
+  // V13: tapping while checks are running sends right away and stops checking
+  {
+    const orders = {};
+    for (let i = 621; i <= 626; i++) orders[id(i)] = { age: 12, amazon: 'eligible' };
+    const env = new Env(new Site(orders), { store: S4() });
+    const w = await ready(env, env.openList(), 6);
+    await waitFor(() => label(w, id(626)) === 'Checking…', 8000, 'checking shown');
+    btnOf(w, id(626)).click();
+    await waitFor(() => st(env, id(626)).status === 'sent' && idle(w), 60000, 'tap during check');
+    check('V13 tap during "Checking…" sends that order once', env.sends[id(626)] === 1 && env.posts[id(626)] === 1, `posts=${env.posts[id(626)]}`);
+    await sleep(500);
+    check('V13 no leftover jobs or frames', !env.store.currentJob && w.document.querySelectorAll('iframe').length === 0);
+  }
+
+  // V14: Amazon's page says both "not eligible" and "already requested" → already
+  {
+    const store = S4({ method: 'page', frameBlocked: false, switchedDay: localDay() });
+    const env = new Env(new Site({ [id(631)]: { age: 12, amazon: 'alreadyNoYes' } }), { store });
+    const w = await ready(env, env.openList(), 1);
+    await waitFor(() => st(env, id(631)).verifiedDay === localDay(), 30000, 'checked');
+    await tap(env, w, id(631));
+    check('V14 "already requested" wins over "not eligible" on Amazon\'s page', st(env, id(631)).status === 'already' && label(w, id(631)) === 'Already requested', `${st(env, id(631)).status} / ${label(w, id(631))}`);
+  }
+
+  // V15: an unfamiliar reason from Amazon is not guessed at
+  {
+    const env = new Env(new Site({ [id(641)]: { age: 12, amazon: 'eligible', reason: 'REVIEW_REQUEST_SOMETHING_NEW' } }), { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    await waitFor(() => st(env, id(641)).verifiedDay === localDay(), 30000, 'checked');
+    await tap(env, w, id(641));
+    check('V15 unknown Amazon reason → falls back to Amazon\'s page, not "not eligible"', st(env, id(641)).status !== 'notEligible', st(env, id(641)).status + ' ' + st(env, id(641)).detail);
   }
 
   await sleep(300);

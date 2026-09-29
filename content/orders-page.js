@@ -79,6 +79,10 @@
   const buttons = new Map(); // orderId -> pill
   const anchors = new Map(); // orderId -> the order number element
   const working = new Set();
+  const verifyPending = new Set(); // orders being confirmed with Amazon right now
+  let verifyRun = null; // the running confirm pass, if any
+  let verifyAbort = false;
+  let verifyKick = null;
   let lastStatuses = {};
   let launcher = null; // toolbar button
   let pop = null; // per-order popup (#nudge-pop)
@@ -115,9 +119,26 @@
   }
 
   // ---------- what each pill says ----------
-  const V = (label, kind, group, opts = {}) => ({ label, kind, group, final: !!opts.final, batch: !!opts.batch, act: !!opts.act });
+  const V = (label, kind, group, opts = {}) => ({ label, kind, group, final: !!opts.final, batch: !!opts.batch, act: !!opts.act, title: opts.title || '' });
 
+  // The labels an order can show, and nothing else:
+  //   Request review      – Amazon accepts a request now: tap to send
+  //   Opens ~date / Not eligible yet – Amazon's window isn't open
+  //   Sent ✓ / Already requested     – a request exists
+  //   ↩ Returned · skipped / ⊘ Past 30 days / Needs a look
+  //   Error – tap         – a send that really failed today
+  //   Checking…           – asking Amazon right now (tap to send anyway)
   function viewOf(rec, b, today) {
+    const base = baseViewOf(rec, b, today);
+    const id = b && b.dataset.nudgeId;
+    // Not yet confirmed with Amazon today: say so, rather than guess from saved data.
+    if (id && verifyPending.has(id) && !base.final && (base.kind === 'action' || base.kind === 'err' || (base.group === 'not eligible yet' && !/^Opens/.test(base.label)))) {
+      return V('Checking…', 'busy', 'checking', { batch: true, act: true, title: 'Checking with Amazon. Tap to send the request now.' });
+    }
+    return base;
+  }
+
+  function baseViewOf(rec, b, today) {
     const orderDate = b ? b.dataset.nudgeDate : '';
     const opens = b ? opensOn(b) : '';
     const notOpenYet = !!opens && opens > today;
@@ -128,14 +149,19 @@
     const waiting = () =>
       notOpenYet ? V(`Opens ~${shortDate(opens)}`, 'muted', 'not eligible yet') : V('Not eligible yet', 'muted', 'not eligible yet');
     // Ready to send: the estimated open date has passed (or there's nothing to estimate from).
-    const ready = (retry) =>
-      notOpenYet ? waiting() : V(retry ? 'Try again' : 'Request review', 'action', 'to send', { batch: true, act: true });
+    const ready = () =>
+      notOpenYet ? waiting() : V('Request review', 'action', 'to send', { batch: true, act: true });
     if (rec && rec.status) {
       switch (rec.status) {
         case 'sent':
           return V('Sent ✓', 'ok', 'sent', { final: true });
         case 'already':
           return V('Already requested', 'muted', 'already requested', { final: true });
+        case 'greyed':
+          // Amazon greyed out its own button inside the window: a request already went out.
+          // Not final: it's checked again each day, and "Request anyway" asks Amazon directly.
+          if (isPast) return past();
+          return notOpenYet ? waiting() : V('Already requested', 'muted', 'already requested', { title: "Amazon's Request a Review button is greyed out. Tap for details." });
         case 'skippedReturn':
           return V(rec.returnKind === 'refund' ? '↩ Refunded · skipped' : '↩ Returned · skipped', 'returned', 'returns/refunds skipped', { final: true });
         case 'closed':
@@ -152,14 +178,14 @@
         default:
           break;
       }
-      // Tried on an earlier day and not finished: try again once it should be open.
+      // Tried on an earlier day, or verified as sendable: ready once it should be open.
       if (isPast) return past();
-      return ready(rec.status === 'notEligible');
+      return ready();
     }
     const age = orderDate ? daysBetween(orderDate, today) : null;
     if (age !== null && age < OPENS_AFTER_DELIVERY_DAYS) return waiting();
     if (isPast) return past();
-    return ready(false);
+    return ready();
   }
 
   // Short explanation for the popup: title, one line, maybe a button.
@@ -169,11 +195,11 @@
     const opens = opensOn(b);
     const age = b.dataset.nudgeDate ? daysBetween(b.dataset.nudgeDate, today) : null;
     const openLine = opens && opens > today ? `Should open around ${shortDate(opens)} (5 days after delivery). ` : '';
-    if (s === 'notEligible' && !isToday && !(opens && opens > today) && !(closesOn(b) && today > closesOn(b)) && !(age !== null && age > 30)) {
-      return { tone: 'info', title: 'Try again', line: `Amazon said not eligible on ${shortDate(rec.checkedDay)}. It may be open now.`, action: 'Send review request' };
-    }
     if (s === 'sent') return { tone: 'ok', title: '✓ Review requested', line: 'Amazon accepted the request.' };
     if (s === 'already') return { tone: 'muted', title: 'Already requested', line: 'Amazon already sent one for this order.' };
+    if (s === 'greyed' && !(opens && opens > today) && !(closesOn(b) && today > closesOn(b))) {
+      return { tone: 'muted', title: 'Already requested', line: "Amazon's Request a Review button is greyed out for this order, so a request was already sent or Amazon won't take one.", action: 'Request anyway' };
+    }
     if (s === 'skippedReturn') {
       return { tone: 'returned', title: rec.returnKind === 'refund' ? 'Refunded – skipped' : 'Returned – skipped', line: rec.detail };
     }
@@ -184,7 +210,7 @@
     if (s === 'notEligible' && isToday) {
       return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}It's included again next time you click Request Reviews.`, action: 'Try now' };
     }
-    if (s === 'error' && isToday) return { tone: 'err', title: "Didn't go through", line: rec.detail, action: 'Try again' };
+    if (s === 'error' && isToday) return { tone: 'err', title: "Didn't go through", line: rec.detail, action: 'Request review' };
     if (!s && opens && opens > today) {
       return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}Request Reviews picks it up once it opens.`, action: 'Try anyway' };
     }
@@ -192,7 +218,7 @@
       return { tone: 'muted', title: 'Not eligible yet', line: 'Ordered less than 5 days ago. Request Reviews picks it up once it opens.', action: 'Try anyway' };
     }
     if (!s && age !== null && age > TOO_OLD_DAYS) return { tone: 'muted', title: 'Window closed', line: `Ordered ${age} days ago.`, action: 'Try anyway' };
-    return { tone: 'info', title: 'Not sent yet', line: '', action: 'Send review request' };
+    return { tone: 'info', title: 'Ready to request', line: 'Amazon accepts a review request for this order.', action: 'Request review' };
   }
 
   // ---------- pills ----------
@@ -211,7 +237,7 @@
   function paint(btn, view) {
     const [bg, fg, border] = COLORS[view.kind] || COLORS.muted;
     btn.textContent = view.label;
-    btn.title = view.act ? 'Send the review request for this order' : 'Tap for details';
+    btn.title = view.title || (view.act ? 'Send the review request for this order' : 'Tap for details');
     Object.assign(btn.style, {
       margin: '0',
       padding: '0 10px',
@@ -628,7 +654,10 @@
           send({ type: 'markReturn', orderId: row.id, detail: `Orders list shows "${ret.phrase}".`, returnKind: ret.returnKind, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
         }
       }
-      if (added) await repaintAll();
+      if (added) {
+        await repaintAll();
+        kickVerify();
+      }
     } finally {
       scanning = false;
     }
@@ -878,10 +907,12 @@
     }
     if (data && data.isSuccess === true) return { status: 'sent', detail: 'Amazon accepted the review request.' };
     const reason = data && typeof data.ineligibleReason === 'string' ? data.ineligibleReason : '';
-    if (/ALREADY/i.test(reason)) return { status: 'already', detail: 'Amazon already sent one for this order.' };
+    if (/ALREADY|DUPLICATE/i.test(reason)) return { status: 'already', detail: 'Amazon already sent one for this order.' };
+    if (/WINDOW/i.test(reason)) return { status: 'notEligible', detail: "Outside Amazon's 5–30 day window" };
     if (reason) {
+      // A reason we don't recognize is never guessed at: Amazon's own page is read for the real answer.
       const words = reason.replace(/^REVIEW_REQUEST_/, '').replace(/_/g, ' ').toLowerCase();
-      return { status: 'notEligible', detail: /WINDOW/i.test(reason) ? "Outside Amazon's 5–30 day window" : `Amazon: ${words}` };
+      return { notProcessed: true, why: `Amazon said "${words}"` };
     }
     return { notProcessed: true, why: `Amazon answered ${resp.status}` };
   }
@@ -1002,6 +1033,123 @@
     return rec;
   }
 
+  // ---------- confirming each order with Amazon ----------
+  // Saved results are only a fallback. Each order that could be requested is
+  // checked on Amazon's own order page (its Request a Review button, never pressing
+  // Yes), once a day, so a label reflects what Amazon says now.
+  function needsCheck(id) {
+    const b = buttons.get(id);
+    if (!b || !b.isConnected) return false;
+    const today = localDay();
+    const rec = lastStatuses[id];
+    if (rec && ['sent', 'already', 'skippedReturn', 'closed'].includes(rec.status)) return false;
+    if (rec && (rec.verifiedDay === today || rec.checkFailedDay === today)) return false;
+    const opens = opensOn(b);
+    if (opens && opens > today) return false; // Amazon's window isn't open yet
+    const age = b.dataset.nudgeDate ? daysBetween(b.dataset.nudgeDate, today) : null;
+    if (age !== null && age < OPENS_AFTER_DELIVERY_DAYS) return false;
+    const closes = closesOn(b);
+    if ((closes && today > closes) || (age !== null && age > TOO_OLD_DAYS)) return false;
+    return !rowReturn(id);
+  }
+
+  // Reads the Request a Review button on Amazon's own order page, in the invisible frame. Read-only.
+  async function runCheck(id, b) {
+    const t0 = Date.now();
+    const res = await send({ type: 'runJob', job: { orderId: id, url: b.dataset.nudgeUrl, dryRun: true, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null, mode: 'frame' } });
+    if (!res || !res.ok) return { skipped: true, busy: !!res && res.reason === 'busy' };
+    const target = b.dataset.nudgeUrl;
+    const frame = makeFrame();
+    const io = frameIo(frame, target);
+    let outcome;
+    try {
+      const first = await io.navigate(target);
+      outcome =
+        first === 'blocked'
+          ? 'blocked'
+          : await Promise.race([
+              globalThis.__nudgeDrive({ orderId: id, dryRun: true, stage: 'start' }, io),
+              sleep(RESULT_TIMEOUT_MS).then(() => 'timeout'),
+            ]);
+    } catch (e) {
+      await reportJob({ status: 'error', detail: `Unexpected problem: ${e && e.message}` });
+    } finally {
+      frame.remove();
+    }
+    if (outcome === 'blocked') {
+      await rememberFrameBlocked(); // Amazon won't show its page in a frame: no automatic checks today
+      await send({ type: 'cancelJob', orderId: id });
+      return { blocked: true };
+    }
+    if (outcome === 'timeout') await send({ type: 'abortJob', orderId: id });
+    return { rec: await waitForResult(id, t0) };
+  }
+
+  const nap = async (ms) => {
+    for (const end = Date.now() + ms; Date.now() < end && !verifyAbort; ) await sleep(200);
+  };
+
+  async function verifyAll() {
+    if (busy || verifyRun || settings.frameBlocked) return;
+    const ids = pageIds().filter(needsCheck);
+    if (!ids.length) return;
+    verifyAbort = false;
+    const run = (async () => {
+      try {
+        ids.forEach((id) => verifyPending.add(id));
+        await repaintAll();
+        // Returned orders are ruled out first, so none shows "Request review".
+        const ret = await ensureReturns();
+        if (ret.blocked) {
+          attention = true;
+          notice(`${ret.why} while reading Manage Returns, so ReviewNudge paused checking.`, 'err');
+          return;
+        }
+        let fails = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const id = ids[i];
+          if (verifyAbort || busy) break;
+          if (!needsCheck(id)) {
+            verifyPending.delete(id);
+            continue;
+          }
+          const r = await runCheck(id, buttons.get(id));
+          verifyPending.delete(id);
+          if (r.blocked || r.busy) break;
+          const rec = r.rec;
+          if (rec && rec.checkFatal) {
+            attention = true;
+            notice(`${rec.checkNote || 'Amazon needs you'}, so ReviewNudge paused checking.`, 'err');
+            break;
+          }
+          fails = rec && rec.verifiedDay === localDay() ? 0 : fails + 1;
+          if (fails >= 2) break; // can't reach Amazon's page: keep saved labels, say nothing
+          await repaintAll();
+          if (i < ids.length - 1 && !verifyAbort) await nap(rand(GAP_MIN_MS, GAP_MAX_MS));
+        }
+      } finally {
+        verifyPending.clear();
+        if (verifyRun === run) verifyRun = null;
+        await repaintAll();
+      }
+    })();
+    verifyRun = run;
+  }
+
+  async function stopVerify() {
+    verifyAbort = true;
+    const run = verifyRun;
+    if (run) await run.catch(() => {});
+  }
+
+  // A moment after the page settles, and again after each run.
+  function kickVerify(ms = 2500) {
+    clearTimeout(verifyKick);
+    verifyKick = setTimeout(() => {
+      verifyAll().catch(() => {});
+    }, ms);
+  }
+
   function showOrder(id) {
     const b = buttons.get(id);
     if (!b || !b.isConnected) return;
@@ -1035,6 +1183,14 @@
     if (busy) return notice('Busy – wait for the current order to finish.', 'info');
     const b = buttons.get(id);
     if (!b) return;
+    if (verifyRun) {
+      // Let the check in flight finish, so the two never overlap.
+      working.add(id);
+      paintOne(b);
+      await stopVerify();
+      working.delete(id);
+      if (busy) return notice('Busy – wait for the current order to finish.', 'info');
+    }
     const { statuses = {} } = await get(['statuses']);
     lastStatuses = statuses;
     if (viewOf(statuses[id], b, localDay()).final) return openPop(id);
@@ -1046,6 +1202,7 @@
     } finally {
       busy = false;
       renderLauncher();
+      kickVerify(8000);
     }
     setStatus(`Order ${id}: ${viewOf(rec.checkedDay ? rec : { ...rec, checkedDay: localDay() }, b, localDay()).label}`);
     announce(id, rec, true);
@@ -1192,6 +1349,7 @@
     let page = 1;
     let pagesNote = '';
     try {
+      await stopVerify(); // a confirm pass in flight finishes first
       for (;;) {
         await scan();
         const { statuses = {} } = await get(['statuses']);
@@ -1260,6 +1418,7 @@
       setStatus(text);
       if (!stopReason || stopReason === 'Stopped.') notice(text, tally.sent ? 'ok' : 'info', null, true);
       renderLauncher();
+      kickVerify(8000);
     }
   }
 
