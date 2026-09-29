@@ -1,6 +1,6 @@
 # How ReviewNudge works
 
-A technical walkthrough for anyone who wants to check the logic before trusting it with their seller account. The code lives in [`extension/`](../extension/).
+A technical walkthrough for anyone who wants to check the logic before trusting it with their seller account. The code is [`background.js`](../background.js) and [`content/`](../content/), with [`manifest.json`](../manifest.json) at the top of the repository.
 
 ## Contents
 
@@ -18,7 +18,7 @@ A technical walkthrough for anyone who wants to check the logic before trusting 
 
 ## One code base, three browsers
 
-ReviewNudge is a standard **Manifest V3 WebExtension**. The same `extension/` folder loads unchanged in Chrome 121+, Firefox 142+ and Safari 17+:
+ReviewNudge is a standard **Manifest V3 WebExtension**. The same folder loads unchanged in Chrome 121+, Firefox 142+ and Safari 17+:
 
 | Difference between browsers | How ReviewNudge handles it |
 |---|---|

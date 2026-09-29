@@ -6,7 +6,7 @@ const vm = require('vm');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
 const path = require('path');
-const EXT = path.join(__dirname, '..', 'extension');
+const EXT = path.join(__dirname, '..');
 const read = (f) => fs.readFileSync(`${EXT}/${f}`, 'utf8');
 function speed(src, pairs) {
   for (const [a, b] of pairs) {

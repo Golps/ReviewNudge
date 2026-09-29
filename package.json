@@ -2,11 +2,11 @@
   "name": "reviewnudge",
   "version": "0.8.1",
   "private": true,
-  "description": "Development tools for ReviewNudge. The extension itself (in extension/) has no dependencies.",
+  "description": "Development tools for ReviewNudge. The extension itself has no dependencies.",
   "license": "MIT",
   "scripts": {
     "test": "node tests/simulation.test.js",
-    "lint": "web-ext lint --source-dir extension",
+    "lint": "web-ext lint --source-dir . --ignore-files \"node_modules/**\" \"tests/**\" \"docs/**\" \"scripts/**\" \"assets/**\" \"dist/**\" \"package*.json\"",
     "package": "sh scripts/package.sh",
     "icons": "python3 scripts/make-icons.py"
   },

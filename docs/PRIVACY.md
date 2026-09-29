@@ -48,7 +48,7 @@ The Firefox manifest declares `data_collection_permissions: none`, which is what
 
 ## Verifying this yourself
 
-The whole extension is in [`extension/`](../extension/): about 2,000 lines of plain JavaScript, no libraries, no minified code. You can:
+The whole extension is [`background.js`](../background.js) and [`content/`](../content/): about 2,000 lines of plain JavaScript, no libraries, no minified code. You can:
 
 - search it for `fetch(`: the only network request is the review request to `sellercentral.amazon.com`,
 - open your browser's developer tools on Seller Central and watch the Network tab during a run.

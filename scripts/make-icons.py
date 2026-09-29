@@ -1,7 +1,7 @@
 """Makes every icon size the extension uses from the full-size logo.
 
 Run from the repository root:  python3 scripts/make-icons.py   (needs Pillow)
-Reads assets/logo-1024.png and writes extension/icons/icon-*.png.
+Reads assets/logo-1024.png and writes icons/icon-*.png.
 To change the logo, replace assets/logo-1024.png (square PNG, transparent corners) and run this.
 """
 import os
@@ -10,7 +10,7 @@ from PIL import Image
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 LOGO = os.path.join(ROOT, 'assets', 'logo-1024.png')
-ICONS = os.path.join(ROOT, 'extension', 'icons')
+ICONS = os.path.join(ROOT, 'icons')
 
 
 def main():

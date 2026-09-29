@@ -103,7 +103,7 @@ ReviewNudge was built with sensitive seller data in mind:
 - **Stores very little, only on your computer:** each order's result (for example "sent" on a date), so labels survive a page reload. Each record is deleted automatically a day after that order's review window closes.
 - **Collects nothing.** No analytics, no tracking, no third parties. Firefox's store listing declares "no data collected".
 - **Two permissions only:** access to `sellercentral.amazon.com`, and local storage.
-- **Open source.** Every line is in [`extension/`](extension/), about 2,000 lines of plain JavaScript with no libraries.
+- **Open source.** Every line is in [`background.js`](background.js) and [`content/`](content/), about 2,000 lines of plain JavaScript with no libraries.
 
 Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
@@ -125,13 +125,13 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Install
 
-**Get the files:** download the latest `ReviewNudge-x.y.z.zip` from [Releases](https://github.com/Golps/ReviewNudge/releases) and unzip it, or clone this repository. The extension is the [`extension/`](extension/) folder. The same folder works in all three browsers.
+**Get the files:** download the latest `ReviewNudge-x.y.z.zip` from [Releases](https://github.com/Golps/ReviewNudge/releases) and unzip it, or download or clone this repository. The folder you get **is** the extension: it has `manifest.json` at the top, and the same folder works in all three browsers.
 
 <details open>
 <summary><b>Chrome</b> (also Edge, Brave, Arc and other Chromium browsers)</summary>
 
 1. Open `chrome://extensions` and turn on **Developer mode** (top right).
-2. Click **Load unpacked** and choose the **extension** folder.
+2. Click **Load unpacked** and choose the **ReviewNudge** folder (the one with `manifest.json` inside).
 3. Pin ReviewNudge from the puzzle-piece menu if you like, then open Seller Central → **Orders → Manage Orders**.
 
 It stays installed. To update, replace the folder and click the reload arrow on its card.
@@ -141,7 +141,7 @@ It stays installed. To update, replace the folder and click the reload arrow on 
 <summary><b>Firefox</b> (142 or newer)</summary>
 
 1. Open `about:debugging#/runtime/this-firefox`.
-2. Click **Load Temporary Add-on…** and choose **manifest.json** inside the **extension** folder.
+2. Click **Load Temporary Add-on…** and choose **manifest.json** inside the **ReviewNudge** folder.
 3. If the button doesn't appear on Seller Central: Extensions menu (puzzle piece) → ReviewNudge → **Always allow on sellercentral.amazon.com**.
 
 Temporary add-ons are removed when Firefox quits. For a permanent install, use a signed build from Releases once one is available.
@@ -154,14 +154,14 @@ Quick try (no Xcode):
 
 1. Safari → Settings → Advanced → turn on **Show features for web developers**.
 2. Safari → Settings → **Developer** → turn on **Allow unsigned extensions**.
-3. Developer menu → **Add Temporary Extension…** → choose the **extension** folder.
+3. Developer menu → **Add Temporary Extension…** → choose the **ReviewNudge** folder (the one with `manifest.json` inside).
 4. On Seller Central, click the ReviewNudge icon → **Always Allow on This Website**.
 
 Temporary Safari extensions are removed when Safari quits or after 24 hours.
 
 Permanent install (free Apple ID is enough for your own Mac):
 
-1. Install Xcode, then run `xcrun safari-web-extension-converter extension --app-name ReviewNudge` in the repository folder.
+1. Install Xcode, then run `xcrun safari-web-extension-converter . --app-name ReviewNudge` inside the ReviewNudge folder.
 2. Open the generated project in Xcode, choose your Personal Team under *Signing*, and click Run.
 3. Turn on ReviewNudge in Safari → Settings → Extensions.
 </details>
@@ -194,9 +194,9 @@ flowchart LR
   PG -- "Manage Returns · order pages" --> SC
 ```
 
-- **`extension/background.js`** keeps one job at a time and records each order's result. Every piece of state is saved to storage, so the browser can pause it at any time without losing anything.
-- **`extension/content/orders-page.js`** adds the button and labels, estimates each order's window, reads Manage Returns, sends the requests and moves through pages.
-- **`extension/content/amazon-pages.js`** reads Amazon's own pages (Manage Returns, and the Request a Review page when a fallback is needed).
+- **`background.js`** keeps one job at a time and records each order's result. Every piece of state is saved to storage, so the browser can pause it at any time without losing anything.
+- **`content/orders-page.js`** adds the button and labels, estimates each order's window, reads Manage Returns, sends the requests and moves through pages.
+- **`content/amazon-pages.js`** reads Amazon's own pages (Manage Returns, and the Request a Review page when a fallback is needed).
 - **One manifest for three browsers:** `background` lists both `service_worker` (Chrome, Safari) and `scripts` (Firefox); Firefox-only settings live under `browser_specific_settings`, and each browser ignores what it doesn't use.
 
 The full technical walkthrough, including how dates are estimated, how returns are matched, and every fallback, is in **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)**.
@@ -244,12 +244,11 @@ npm run icons        # rebuilds icons from assets/logo-1024.png
 ```
 
 ```
-ReviewNudge/
-├── extension/          ← the extension (load this folder in any browser)
-│   ├── manifest.json
-│   ├── background.js
-│   ├── content/        orders-page.js · orders-page.css · amazon-pages.js
-│   └── icons/
+ReviewNudge/            ← this folder is the extension (load it in any browser)
+├── manifest.json
+├── background.js
+├── content/            orders-page.js · orders-page.css · amazon-pages.js
+├── icons/
 ├── tests/              simulated Seller Central (fake browser, fake Amazon pages)
 ├── scripts/            package.sh · make-icons.py
 ├── docs/               HOW-IT-WORKS.md · PRIVACY.md · images
