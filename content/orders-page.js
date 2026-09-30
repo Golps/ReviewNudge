@@ -1549,8 +1549,6 @@
     const { statuses = {} } = await get(['statuses']);
     lastStatuses = statuses;
     log(`ReviewNudge ${(api.runtime.getManifest && api.runtime.getManifest().version) || ''} · ${new Date().toISOString().slice(0, 16)} · ${(navigator.userAgent.match(/(Safari|Firefox|Chrome)\/[\d.]+/g) || []).join(' ')}`);
-    const ids = pageIds().slice(0, DIAG_MAX);
-
     // Returns: read both lists fresh, exactly as a run does (read-only).
     log('Reading Manage Returns…');
     checkingReturns = true;
@@ -1577,10 +1575,13 @@
             : `Manage FBA returns: couldn't be read (${f.why || 'unknown'})${f.snippet ? `\n  The page shows: ${clip(f.snippet, 300)}` : ''}`
       );
     }
+    // The order list is taken now, after the page has settled (it may still have been loading).
+    await scan();
+    const ids = pageIds().slice(0, DIAG_MAX);
     const onPage = ids.filter((id) => sf.has(id) || fbaIds.has(id) || rowReturn(id));
     log(`Orders on this page with a return or refund: ${onPage.length}\n`);
 
-    log(`Orders on page: ${pageIds().length}. Asking Amazon about ${ids.length}.\n`);
+    log(`Orders on page: ${ids.length}. Asking Amazon about each.\n`);
     log('order · label shown · saved · Amazon says · return found on');
     let match = 0;
     let mismatch = 0;
