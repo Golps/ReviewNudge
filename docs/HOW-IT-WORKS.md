@@ -93,7 +93,7 @@ A buyer in the middle of a return or refund has no reason to get a review reques
 
 3. **Manage FBA returns**: right after the seller-fulfilled list, ReviewNudge follows Seller Central's own link or *Seller fulfilled ▾* switch to the FBA returns page and reads it the same way (its total is shown as *N items*). It filters by **return authorized date** when the page offers that, so a return counts from the day it's authorized; otherwise it picks the widest date range available (up to *Last year*) on Amazon's default *customer refunded date* filter. Accounts without an FBA returns page are skipped silently.
 
-The lists are re-read every 15 minutes during long runs.
+Both lists are read when Manage Orders opens (so a returned order never shows **Request review**) and re-read every 15 minutes during long runs.
 
 **Best effort by design.** If Manage Returns can't be read in full, ReviewNudge doesn't guess. It keeps sending, still skips orders the orders page marks as refunded, and adds a line to the summary: *Manage Returns couldn't be read, so only returns shown on the orders page were skipped.* A CAPTCHA or sign-in page is different: see [When it stops](#when-it-stops).
 
@@ -145,13 +145,26 @@ Each order's record is deleted a day after its review window closes (or 45 days 
 
 ## The diagnostic
 
-Option-click (Alt-click) **Request Reviews** to check the labels against Amazon yourself. For every order on the page (up to 100), one line:
+Option-click (Alt-click) **Request Reviews** to check ReviewNudge against your own account. Nothing is sent or clicked and nothing is saved. The text disappears when you close the panel; its **Copy** button copies it.
+
+**1. Returns.** Both lists are read fresh, the same way a run reads them:
 
 ```
-order · label shown · saved result · Amazon says
+Manage Returns (seller-fulfilled): read via … · 3 orders with a return (last 90 days, any status)
+Manage FBA returns: read · 1 order · filtered by return authorized date · range: Last year
 ```
 
-*Amazon says* comes from the same read-only lookup described in [Confirming each order with Amazon](#confirming-each-order-with-amazon), made fresh for the diagnostic. A ⚠ marks a label that disagrees, and the last lines give totals. Nothing is sent or clicked and nothing is saved. The text disappears when you close the panel. It exists so anyone can verify the extension against their own account, and so bug reports can include Amazon's actual answers.
+or why a list couldn't be read, or that the account has no FBA returns page.
+
+**2. Every order on the page** (up to 100), one line each:
+
+```
+order · label shown · saved result · Amazon says · return found on
+```
+
+*Amazon says* comes from the read-only lookup in [Confirming each order with Amazon](#confirming-each-order-with-amazon). *Return found on* names Manage Returns, FBA returns and/or the orders list. A ⚠ marks a line where something disagrees: a label that contradicts Amazon, or an order with a return that would still be sent. The last lines give totals.
+
+It exists so anyone can verify the extension against their own account, and so bug reports can include Amazon's actual answers.
 
 ## Testing
 

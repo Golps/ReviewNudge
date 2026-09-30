@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.6
+
+- **The diagnostic checks returns too.** It reads Manage Returns and Manage FBA returns fresh and reports whether each was read, how, and how many returns it holds (and, for FBA, which date filter and range were used). Every order line now says where its return was found, and flags any order with a return that would still be sent.
+- **Returns are read when Manage Orders opens**, not only when a run starts, so a returned order shows **↩ Returned · skipped** straight away instead of **Request review**.
+
 ## 0.8.5
 
 - **Nothing is sent on an estimate anymore.** A run starts by asking Amazon about every order on the page not yet confirmed today (*Checking 12 of 40 with Amazon · Stop*), then sends only the orders Amazon says can be requested. Tapping a single order asks first too. Before, clicking Request Reviews before the background lookups finished could send to orders whose window the delivery-date estimate thought was still open, and Amazon answered *not eligible* or *already sent*.

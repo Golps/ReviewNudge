@@ -807,6 +807,8 @@
         ]);
         if (r.blocked) return r; // a CAPTCHA or sign-in page: don't try again elsewhere
         if (r.ok) {
+          r.via = url === urls[0] && url === menuReturnsUrl() ? "Seller Central's Manage Returns link" : /gp\/returns/.test(url) ? 'the classic Manage Returns page' : 'the Manage Returns page';
+          r.sfIds = r.ids.slice();
           // FBA returns live on their own page, one click away. Best effort, and
           // silent when the account has no FBA returns page.
           const fba = await Promise.race([
@@ -816,6 +818,7 @@
           if (fba.blocked) return fba;
           if (fba.ok) r.ids = r.ids.concat(fba.ids);
           r.fba = fba.ok ? 'read' : fba.missing ? 'none' : 'failed';
+          r.fbaInfo = fba; // for the diagnostic
           return r;
         }
         whys.push(r.why);
@@ -1156,7 +1159,16 @@
     const ids = checkOrder(pageIds());
     if (!ids.length) return;
     checkStop = false;
-    const run = runChecks(ids).finally(() => {
+    const run = (async () => {
+      // Returns first, so a returned order never shows "Request review" (best effort).
+      const ret = await ensureReturns();
+      if (ret.blocked) {
+        attention = true;
+        renderLauncher();
+        return;
+      }
+      await runChecks(checkOrder(pageIds()));
+    })().finally(() => {
       if (checkRun === run) checkRun = null;
     });
     checkRun = run;
@@ -1537,8 +1549,38 @@
     lastStatuses = statuses;
     log(`ReviewNudge ${(api.runtime.getManifest && api.runtime.getManifest().version) || ''} · ${new Date().toISOString().slice(0, 16)} · ${(navigator.userAgent.match(/(Safari|Firefox|Chrome)\/[\d.]+/g) || []).join(' ')}`);
     const ids = pageIds().slice(0, DIAG_MAX);
+
+    // Returns: read both lists fresh, exactly as a run does (read-only).
+    log('Reading Manage Returns…');
+    checkingReturns = true;
+    renderLauncher();
+    let ret;
+    try {
+      ret = await readReturnsList();
+    } finally {
+      checkingReturns = false;
+      renderLauncher();
+    }
+    const sf = new Set(ret.ok ? ret.sfIds || [] : []);
+    const fbaIds = new Set(ret.ok && ret.fbaInfo && ret.fbaInfo.ok ? ret.fbaInfo.ids : []);
+    if (ret.blocked) log(`Manage Returns: stopped, ${ret.why}. A run would stop here too.`);
+    else if (!ret.ok) log(`Manage Returns: couldn't be read (${ret.why}). A run would still skip returns shown on the orders page.`);
+    else {
+      log(`Manage Returns (seller-fulfilled): read via ${ret.via} · ${sf.size} order${sf.size === 1 ? '' : 's'} with a return (last 90 days, any status)`);
+      const f = ret.fbaInfo || {};
+      log(
+        f.ok
+          ? `Manage FBA returns: read · ${fbaIds.size} order${fbaIds.size === 1 ? '' : 's'} · filtered by ${f.filter} · range: ${f.range}`
+          : f.missing
+            ? 'Manage FBA returns: no FBA returns page on this account (fine if you don\'t use FBA)'
+            : `Manage FBA returns: couldn't be read (${f.why || 'unknown'})`
+      );
+    }
+    const onPage = ids.filter((id) => sf.has(id) || fbaIds.has(id) || rowReturn(id));
+    log(`Orders on this page with a return or refund: ${onPage.length}\n`);
+
     log(`Orders on page: ${pageIds().length}. Asking Amazon about ${ids.length}.\n`);
-    log('order · label shown · saved · Amazon says');
+    log('order · label shown · saved · Amazon says · return found on');
     let match = 0;
     let mismatch = 0;
     let unread = 0;
@@ -1549,14 +1591,18 @@
       const r = await checkOne(id);
       const amazon = r.signedOut ? 'sign-in needed' : r.answer === 'already' ? 'already requested' : r.answer === 'eligible' ? 'can be requested' : r.answer === 'notEligible' ? `not now (${r.detail})` : 'no readable answer';
       // Does the label agree with Amazon?
+      const row = rowReturn(id);
+      const where = [sf.has(id) && 'Manage Returns', fbaIds.has(id) && 'FBA returns', row && `orders list ("${row.phrase}")`].filter(Boolean).join(' + ') || '–';
+      const hasReturn = where !== '–';
       let ok = null;
-      if (r.answer === 'already') ok = /Already|Sent|Returned|Refunded|Past|Needs a look/.test(v.label);
+      if (hasReturn && v.batch) ok = false; // a return, but it would be sent
+      else if (r.answer === 'already') ok = /Already|Sent|Returned|Refunded|Past|Needs a look/.test(v.label);
       else if (r.answer === 'eligible') ok = v.batch || /Returned|Refunded/.test(v.label);
       else if (r.answer === 'notEligible') ok = !v.batch;
       if (ok === true) match++;
       else if (ok === false) mismatch++;
       else unread++;
-      log(`${ok === false ? '⚠ ' : ''}${id} · ${v.label} · ${rec ? `${rec.status} ${rec.checkedDay || ''}`.trim() : 'none'} · ${amazon}`);
+      log(`${ok === false ? '⚠ ' : ''}${id} · ${v.label} · ${rec ? `${rec.status} ${rec.checkedDay || ''}`.trim() : 'none'} · ${amazon} · ${where}`);
       if (r.signedOut) break;
       await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
     }

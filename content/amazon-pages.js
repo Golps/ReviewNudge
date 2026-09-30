@@ -484,7 +484,7 @@
     }
     // If the page can filter by *return authorized* date, use that (it lists a
     // return from the day it's authorized, before any refund).
-    await useAuthorizedDateFilter(io);
+    const byAuth = await useAuthorizedDateFilter(io);
     // Then widen the date range as far as the page allows.
     const choices = deepAll(io.doc(), 'label, [role="radio"], kat-radiobutton').filter((e) => !inOurUi(e));
     let range = null;
@@ -501,7 +501,9 @@
         await stableReturns(io, before, RETURNS_PAGE_MS); // new results, or the same if nothing changed
       }
     }
-    return readReturns(io);
+    const r = await readReturns(io);
+    // For the diagnostic: which filter and date range the list was read with.
+    return { ...r, filter: byAuth ? 'return authorized date' : 'customer refunded date', range: range ? labelOf(range) : "the page's default" };
   }
 
   // Switches the FBA list's date filter to "Return authorized date" when Amazon

@@ -113,7 +113,10 @@ Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run
 
 - the label ReviewNudge shows, and what it has saved for that order,
 - Amazon's own answer about whether a review can be requested (*can be requested*, *already requested*, or *not now*),
-- a ⚠ wherever the two disagree, and a total at the end.
+- where a return or refund was found for it (Manage Returns, Manage FBA returns, or the orders list),
+- a ⚠ wherever something disagrees, and a total at the end.
+
+It starts by reading Manage Returns and Manage FBA returns fresh and says whether each list could be read, how it was read, and how many returns it holds.
 
 It's **read-only**: it doesn't send a request, click anything, or change anything. The text stays in your browser until you close the panel. Use its **Copy** button only if you want to share it, for example in a bug report. Order numbers do appear in it.
 

@@ -1201,16 +1201,22 @@ async function main() {
 
   // X: Option-click diagnostic is read-only and shows Amazon's answers
   {
-    const orders = { [id(701)]: { age: 12, amazon: 'eligible' }, [id(702)]: { age: 12, amazon: 'already' } };
+    const orders = { [id(701)]: { age: 12, amazon: 'eligible' }, [id(702)]: { age: 12, amazon: 'already' }, [id(703)]: { age: 12, amazon: 'eligible' } };
     const site = new Site(orders);
     site.getMode = 'json';
+    site.returns = [id(703)];
+    site.fbaVia = 'link';
+    site.fbaReturns = [];
     const env = new Env(site, { store: S4() });
-    const w = await ready(env, env.openList(), 2);
-    await sleep(2500);
+    const w = await ready(env, env.openList(), 3);
+    await waitFor(() => label(w, id(703)) === '↩ Returned · skipped', 20000, 'return marked on load').catch(() => {});
+    await sleep(1500);
     launcherOf(w).dispatchEvent(new w.MouseEvent('click', { bubbles: true, altKey: true }));
     await waitFor(() => /Use Copy/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
     const txt = w.document.querySelector('#nudge-diag textarea').value;
-    check('X1 diagnostic compares every label with Amazon', new RegExp(`${id(701)} · Request review · [^·]+ · can be requested`).test(txt) && new RegExp(`${id(702)} · Already requested · [^·]+ · already requested`).test(txt) && /agree with Amazon: 2 · disagree \(⚠\): 0/.test(txt), txt);
+    check('X1 diagnostic compares every label with Amazon', new RegExp(`${id(701)} · Request review · [^·]+ · can be requested`).test(txt) && new RegExp(`${id(702)} · Already requested · [^·]+ · already requested`).test(txt) && /agree with Amazon: 3 · disagree \(⚠\): 0/.test(txt), txt);
+    check('X3 diagnostic reports both returns lists and where each return came from', /Manage Returns \(seller-fulfilled\): read via .* · 1 order with a return/.test(txt) && /Manage FBA returns: read · 0 orders/.test(txt) && new RegExp(`${id(703)} · ↩ Returned · skipped · .* · Manage Returns`).test(txt), txt);
+    check('X4 a returned order is labelled on page load, before any run', label(w, id(703)) === '↩ Returned · skipped' && !(env.posts || {})[id(703)]);
     check('X2 diagnostic sends nothing and presses nothing', !env.posts && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length && idle(w));
   }
 
