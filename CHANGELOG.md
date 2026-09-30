@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5
+
+- **Nothing is sent on an estimate anymore.** A run starts by asking Amazon about every order on the page not yet confirmed today (*Checking 12 of 40 with Amazon · Stop*), then sends only the orders Amazon says can be requested. Tapping a single order asks first too. Before, clicking Request Reviews before the background lookups finished could send to orders whose window the delivery-date estimate thought was still open, and Amazon answered *not eligible* or *already sent*.
+- The date estimate is only used if Amazon's lookup can't be read at all.
+- Diagnostic panel: a **Copy** button, and Cmd+A selects only the panel's text, not the page behind it.
+
 ## 0.8.4
 
 - **Already requested is now detected before you send.** A real-account diagnostic showed that Amazon's quick check answers clearly: `REVIEW_REQUEST_ALREADY_SENT` for orders already requested, and `isSuccess: true` for orders that can be requested. 0.8.3 didn't recognize the second answer, so it switched checking off after the first few eligible orders and never reached the already-requested ones. Both answers are now read, and so is *not eligible yet*.

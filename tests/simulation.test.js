@@ -636,6 +636,7 @@ async function sendAll(w) {
   await waitFor(() => !idle(w), 2000, 'batch start').catch(() => {});
   return waitFor(() => idle(w) && statusText(w), 30000, 'batch end');
 }
+async function stopBackground() {}
 async function tap(env, w, id) {
   const before = env.store.statuses && env.store.statuses[id] ? env.store.statuses[id].checkedAt : 0;
   btnOf(w, id).click();
@@ -1207,10 +1208,44 @@ async function main() {
     const w = await ready(env, env.openList(), 2);
     await sleep(2500);
     launcherOf(w).dispatchEvent(new w.MouseEvent('click', { bubbles: true, altKey: true }));
-    await waitFor(() => /Copy this text/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
+    await waitFor(() => /Use Copy/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
     const txt = w.document.querySelector('#nudge-diag textarea').value;
     check('X1 diagnostic compares every label with Amazon', new RegExp(`${id(701)} · Request review · [^·]+ · can be requested`).test(txt) && new RegExp(`${id(702)} · Already requested · [^·]+ · already requested`).test(txt) && /agree with Amazon: 2 · disagree \(⚠\): 0/.test(txt), txt);
     check('X2 diagnostic sends nothing and presses nothing', !env.posts && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length && idle(w));
+  }
+
+
+  // G: a run asks Amazon first and only sends what Amazon confirms today
+  {
+    const orders = {
+      [id(801)]: { age: 20, amazon: 'eligible' },
+      [id(802)]: { age: 38, amazon: 'notEligible' }, // estimate says still open; Amazon says the window closed
+      [id(803)]: { age: 25, amazon: 'already' }, // requested elsewhere
+      [id(804)]: { age: 22, amazon: 'notEligible' },
+    };
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 4);
+    launcherOf(w).click(); // straight away, before background lookups finish
+    const sawChecking = await waitFor(() => /Checking \d+ of \d+ with Amazon/.test(launcherText(w)), 5000, 'checking label').then(() => true, () => false);
+    const end = await waitFor(() => idle(w) && statusText(w), 60000, 'run');
+    check('G1 run shows "Checking N of M with Amazon" first', sawChecking);
+    check('G2 only the order Amazon confirmed is sent', env.posts && env.posts[id(801)] === 1 && !env.posts[id(802)] && !env.posts[id(803)] && !env.posts[id(804)], JSON.stringify(env.posts));
+    check('G3 labels come from Amazon: already / not now', label(w, id(803)) === 'Already requested' && label(w, id(801)) === 'Sent ✓' && !/Request review/.test(label(w, id(802))), `${label(w, id(802))} | ${label(w, id(803))}`);
+    check('G4 no errors in the summary', /^Done\. Sent 1\b/.test(end) && !/error/i.test(end), end);
+  }
+
+  // G5: tapping one order also asks first
+  {
+    const site = new Site({ [id(811)]: { age: 20, amazon: 'notEligible' } });
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    await stopBackground(env);
+    btnOf(w, id(811)).click();
+    await waitFor(() => st(env, id(811)).status === 'notEligible' && idle(w) && label(w, id(811)) !== 'Sending…', 15000, 'tap');
+    check('G5 tap on an order Amazon says is not open → nothing sent', !env.posts, JSON.stringify(env.posts));
   }
 
   await sleep(300);

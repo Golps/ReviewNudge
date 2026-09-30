@@ -115,7 +115,7 @@ Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run
 - Amazon's own answer about whether a review can be requested (*can be requested*, *already requested*, or *not now*),
 - a ⚠ wherever the two disagree, and a total at the end.
 
-It's **read-only**: it doesn't send a request, click anything, or change anything. The text stays in your browser until you close the panel. Copy it only if you want to share it, for example in a bug report. Order numbers do appear in it.
+It's **read-only**: it doesn't send a request, click anything, or change anything. The text stays in your browser until you close the panel. Use its **Copy** button only if you want to share it, for example in a bug report. Order numbers do appear in it.
 
 ## How ReviewNudge is different
 

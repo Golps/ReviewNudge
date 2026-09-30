@@ -495,6 +495,8 @@
         ? 'Stopping…'
         : checkingReturns
           ? 'Checking returns…'
+          : busy && progress && progress.check
+          ? `${progress.page > 1 ? `Page ${progress.page} · ` : ''}Checking ${progress.i} of ${progress.n} with Amazon · Stop`
           : busy && progress && !progress.n
           ? `Opening page ${progress.page} · Stop`
           : busy && progress
@@ -1013,6 +1015,19 @@
       const { statuses = {} } = await get(['statuses']);
       return statuses[id] || { status: 'skippedReturn', returnKind: 'return' };
     }
+    // Ask Amazon first (read-only, a fraction of a second). Only an order Amazon
+    // says can be requested is sent; the date estimate alone never decides.
+    const { statuses: known = {} } = await get(['statuses']);
+    const k = known[id];
+    if (!(k && k.status === 'eligible' && k.verifiedDay === localDay()) && checkOffDay !== localDay()) {
+      const answer = await lookUp(id);
+      if (answer === 'already' || answer === 'notEligible') {
+        working.delete(id);
+        await repaintAll();
+        const { statuses: now = {} } = await get(['statuses']);
+        return now[id] || { status: answer };
+      }
+    }
     let rec = settings.method === 'fast' ? await runFast(id, b) : { usePage: true };
     if (rec.usePage) rec = settings.frameBlocked ? { useTab: true } : await runInFrame(id, b);
     if (rec.useTab) rec = await runInTab(id, b);
@@ -1092,43 +1107,60 @@
   let checkKick = null;
   let checkOffDay = ''; // checking gave nothing useful today: don't keep asking
 
+  let unclearStreak = 0; // unreadable replies in a row, across all lookups
+
+  // One lookup, recorded. Returns Amazon's answer ('already' | 'eligible' | 'notEligible'),
+  // 'signedOut', or null when the reply couldn't be read.
+  async function lookUp(id) {
+    const b = buttons.get(id);
+    const r = await checkOne(id);
+    if (r.signedOut) return 'signedOut';
+    if (!r.answer) {
+      if (++unclearStreak >= CHECK_GIVE_UP) checkOffDay = localDay();
+      return null;
+    }
+    unclearStreak = 0;
+    await send({ type: 'checked', orderId: id, answer: r.answer, detail: r.detail, orderDate: (b && b.dataset.nudgeDate) || null, closesOn: (b && closesOn(b)) || null });
+    return r.answer;
+  }
+
+  // Looks up the given orders one by one. In a run (inRun) it reports progress
+  // and honours Stop; otherwise it yields to any run that starts.
+  async function runChecks(ids, { inRun = false, onProgress = null } = {}) {
+    let sinceRepaint = 0;
+    for (let i = 0; i < ids.length; i++) {
+      if (checkOffDay === localDay()) break;
+      if (inRun ? stopRequested : checkStop || busy) break;
+      const id = ids[i];
+      if (!needsCheck(id)) continue;
+      if (onProgress) onProgress(i + 1, ids.length);
+      const answer = await lookUp(id);
+      if (answer === 'signedOut') break; // Seller Central wants a sign-in; the orders page will show it
+      if (answer && ++sinceRepaint >= 5) {
+        sinceRepaint = 0;
+        await repaintAll(); // labels update as answers come in
+      }
+      if (i < ids.length - 1) await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
+    }
+    await repaintAll();
+  }
+
+  // Orders that would be sent first, then the ones not expected to be open yet.
+  function checkOrder(ids) {
+    const today = localDay();
+    return ids.filter(needsCheck).sort((x, y) => Number(!viewOf(lastStatuses[x], buttons.get(x), today).batch) - Number(!viewOf(lastStatuses[y], buttons.get(y), today).batch));
+  }
+
   async function checkAll() {
     if (busy || checkRun || checkOffDay === localDay()) return;
-    const today0 = localDay();
-    // Orders that would be sent first, then the ones not expected to be open yet.
-    const ids = pageIds()
-      .filter(needsCheck)
-      .sort((x, y) => Number(!viewOf(lastStatuses[x], buttons.get(x), today0).batch) - Number(!viewOf(lastStatuses[y], buttons.get(y), today0).batch));
+    const ids = checkOrder(pageIds());
     if (!ids.length) return;
     checkStop = false;
-    const run = (async () => {
-      let unclear = 0;
-      let sinceRepaint = 0;
-      for (let i = 0; i < ids.length && !checkStop && !busy; i++) {
-        const id = ids[i];
-        if (!needsCheck(id)) continue;
-        const b = buttons.get(id);
-        const r = await checkOne(id);
-        if (r.signedOut) break; // Seller Central wants a sign-in; the orders page will show it
-        if (r.answer) {
-          unclear = 0;
-          await send({ type: 'checked', orderId: id, answer: r.answer, detail: r.detail, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
-          if (++sinceRepaint >= 5) {
-            sinceRepaint = 0;
-            await repaintAll(); // labels update as answers come in
-          }
-        } else if (++unclear >= CHECK_GIVE_UP) {
-          checkOffDay = localDay();
-          break;
-        }
-        if (i < ids.length - 1) await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
-      }
-    })().finally(() => {
+    const run = runChecks(ids).finally(() => {
       if (checkRun === run) checkRun = null;
     });
     checkRun = run;
     await run.catch(() => {});
-    await repaintAll();
   }
 
   // Waits for at most the one lookup in flight (a fraction of a second).
@@ -1342,6 +1374,23 @@
       await stopChecks(); // at most one quick lookup in flight
       for (;;) {
         await scan();
+        lastStatuses = (await get(['statuses'])).statuses || {};
+        // Ask Amazon about every order on this page not yet confirmed today, so the
+        // plan comes from Amazon's answers, not from delivery-date estimates.
+        const toCheck = checkOrder(pageIds());
+        if (toCheck.length) {
+          await runChecks(toCheck, {
+            inRun: true,
+            onProgress: (i, n) => {
+              progress = { check: true, i, n, page };
+              renderLauncher();
+            },
+          });
+          if (stopRequested) {
+            stopReason = 'Stopped.';
+            break;
+          }
+        }
         const { statuses = {} } = await get(['statuses']);
         lastStatuses = statuses;
         const plan = pageIds().filter((id) => viewOf(statuses[id], buttons.get(id), localDay()).batch);
@@ -1426,9 +1475,39 @@
       p.id = 'nudge-diag';
       p.setAttribute('data-nudge-ui', '');
       Object.assign(p.style, { position: 'fixed', left: '16px', right: '16px', top: '16px', bottom: '16px', zIndex: '2147483001', background: '#fff', border: '2px solid #232f3e', borderRadius: '8px', padding: '12px', font: '12px/1.4 Menlo, monospace', color: '#0f1111', display: 'flex', flexDirection: 'column', gap: '8px', boxShadow: '0 8px 30px rgba(0,0,0,.3)' });
-      p.innerHTML = '<div style="display:flex;justify-content:space-between;font:600 14px Arial"><span>ReviewNudge diagnostic · read-only, nothing is sent</span><button type="button" data-close style="font:14px Arial">Close</button></div><textarea readonly style="flex:1;width:100%;font:12px/1.4 Menlo,monospace;white-space:pre-wrap"></textarea>';
+      p.innerHTML = '<div style="display:flex;justify-content:space-between;font:600 14px Arial"><span>ReviewNudge diagnostic · read-only, nothing is sent</span><span><button type="button" data-copy style="font:14px Arial;margin-right:8px">Copy</button><button type="button" data-close style="font:14px Arial">Close</button></span></div><textarea readonly style="flex:1;width:100%;font:12px/1.4 Menlo,monospace;white-space:pre-wrap"></textarea>';
+      const ta = p.querySelector('textarea');
       p.querySelector('[data-close]').addEventListener('click', () => p.remove());
+      p.querySelector('[data-copy]').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        let ok = false;
+        try {
+          await navigator.clipboard.writeText(ta.value);
+          ok = true;
+        } catch (err) {
+          ta.focus();
+          ta.select();
+          try {
+            ok = document.execCommand('copy');
+          } catch (err2) {
+            ok = false;
+          }
+        }
+        btn.textContent = ok ? 'Copied ✓' : 'Press Cmd+C';
+        setTimeout(() => (btn.textContent = 'Copy'), 2000);
+      });
+      // Cmd/Ctrl+A anywhere in the panel selects the panel's text only, not the page.
+      p.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) {
+          e.preventDefault();
+          e.stopPropagation();
+          ta.focus();
+          ta.select();
+        }
+      }, true);
+      p.tabIndex = -1;
       document.body.appendChild(p);
+      ta.focus();
     }
     return p.querySelector('textarea');
   }
@@ -1483,7 +1562,7 @@
     }
     log(`\nLabels that agree with Amazon: ${match} · disagree (⚠): ${mismatch} · no answer: ${unread}`);
     log(mismatch ? 'Labels marked ⚠ will be corrected on the next page load.' : 'All labels agree with Amazon.');
-    log('Copy this text (click in it, Cmd+A, Cmd+C) to share it. It is not saved anywhere.');
+    log('Use Copy (top right) to share this text. It is not saved anywhere.');
   }
 
   // ---------- start ----------

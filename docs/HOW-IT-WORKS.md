@@ -43,8 +43,8 @@ ReviewNudge is a standard **Manifest V3 WebExtension**. The same folder loads un
 ## A run, step by step
 
 1. **Scan.** Order numbers are found on Manage Orders (links, plain text or Amazon's shadow-DOM cards), and a label is placed under each one.
-2. **Confirm.** Orders that could be requested are looked up on Amazon (see below), so each label is current.
-3. **Plan.** Every order whose label says **Request review** is queued.
+2. **Confirm.** Every order on the page not yet confirmed today is looked up on Amazon (see below). The launcher shows *Checking 12 of 40 with Amazon · Stop*.
+3. **Plan.** Only orders Amazon said today can be requested are queued. The delivery-date estimate never decides on its own; it's used only if Amazon's lookup can't be read at all.
 4. **Returns.** Before the first send, Manage Returns is read in an invisible frame (see below). Matching orders become **↩ Returned · skipped**.
 5. **Send**, one order at a time, with a random 3–6 second pause between orders.
 6. **Next page.** When the page is done, Amazon's **Next** button is clicked, unless the page already reached orders past the 30-day window.
@@ -82,7 +82,7 @@ Amazon's answer decides the label:
 | Any other `ineligibleReason` (for example outside the time window) | **Opens ~date** or **Not eligible yet**, looked up again tomorrow |
 | No readable answer | unchanged |
 
-After five unreadable replies in a row (errors, not JSON), lookups stop for that visit. The send itself still returns Amazon's definite answer in under a second, so an already-requested order shows **Already requested**, never an error.
+A run, and a tap on a single order, always does these lookups first, so nothing is sent to an order Amazon has already closed or already has a request for. After five unreadable replies in a row (errors, not JSON), lookups stop for the day and ReviewNudge falls back to the delivery-date estimate. The send itself still returns Amazon's definite answer in under a second, so an already-requested order shows **Already requested**, never an error.
 
 ## Skipping returns and refunds
 
