@@ -355,6 +355,8 @@
   // (Amazon's FBA list is filtered by refund date; widest = fewest missed).
   const FBA_RANGES = [/^last year$/i, /^last 365 days$/i, /^last 180 days$/i, /^last 90 days$/i];
   const AUTHORIZED_FILTER = /return authori[sz]ed date/i;
+  // An empty list: a count of zero or a "nothing here" message, with no order numbers.
+  const EMPTY_LIST = /\b(?:no (?:returns?|results?|records?|items?|data)(?: (?:were |was )?(?:found|to (?:display|show)|available|match(?:ed|ing)?))?|there (?:are|were) no (?:returns?|results?|items?)|(?:showing )?0 (?:results?|items?|returns?))\b/i;
 
   function readReturnsPage(doc) {
     const text = pageText(doc, false);
@@ -367,6 +369,7 @@
       }
     }
     const ids = text.match(ORDER_ID_G) || [];
+    if (total === null && !ids.length && EMPTY_LIST.test(text)) total = 0; // an empty list is a complete read
     return { text, total, ids, sig: `${total}#${ids.join(',')}` };
   }
 
@@ -389,7 +392,20 @@
           since = Date.now();
         } else if (Date.now() - since >= RETURNS_SETTLE_MS) return p;
       }
-      if (Date.now() - start > ms) return { fail: before ? "the next page of returns didn't load" : "the returns list didn't load" };
+      if (Date.now() - start > ms) {
+        // For the diagnostic: what the page says instead (only when it lists no orders).
+        let snippet = '';
+        const doc = io.doc();
+        if (doc && doc.body) {
+          const t = pageText(doc, false);
+          if (!ORDER_ID_G.test(t)) {
+            const at = Math.max(0, t.search(/FBA returns|Manage returns|Customer refunded date|returns/i));
+            snippet = t.slice(at, at + 300);
+          }
+          ORDER_ID_G.lastIndex = 0;
+        }
+        return { fail: before ? "the next page of returns didn't load" : "the returns list didn't load", snippet };
+      }
       await sleep(POLL_MS);
     }
   }
@@ -398,7 +414,7 @@
   // Only succeeds if it read at least as many rows as the page's own total.
   async function readReturns(io) {
     let page = await stableReturns(io, null, RETURNS_LOAD_MS);
-    if (page.fail) return { ok: false, why: page.fail, blocked: !!page.blocked };
+    if (page.fail) return { ok: false, why: page.fail, blocked: !!page.blocked, snippet: page.snippet };
     const total = page.total;
 
     // Show the most rows per page Amazon offers (fewer pages to click through).

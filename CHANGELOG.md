@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.7
+
+- **An empty returns list counts as read.** A real-account diagnostic showed Manage Returns read correctly (3 returns, all matched), but an empty Manage FBA returns page (a seller who doesn't use FBA) was reported as *couldn't be read*, because there was no count and no rows to wait for. A page that says it has no returns, or shows a count of zero, is now a complete read.
+- If a returns page still can't be read, the diagnostic shows what the page says instead, so the wording can be supported.
+
 ## 0.8.6
 
 - **The diagnostic checks returns too.** It reads Manage Returns and Manage FBA returns fresh and reports whether each was read, how, and how many returns it holds (and, for FBA, which date filter and range were used). Every order line now says where its return was found, and flags any order with a return that would still be sent.

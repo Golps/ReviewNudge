@@ -103,7 +103,7 @@ class Site {
           const auth = site.fbaAuthFilter ? `<select id="basis"><option value="ref">Customer refunded date</option><option value="auth" ${byAuth ? 'selected' : ''}>Return authorized date</option></select>` : '';
           w.document.getElementById('fba').innerHTML =
             `<div>${auth}<label><input type="radio" name="d" ${days === 30 ? 'checked' : ''}>Last 30 days</label><label id="d90"><input type="radio" name="d" ${days === 90 ? 'checked' : ''}>Last 90 days</label><label id="d365"><input type="radio" name="d" ${days === 365 ? 'checked' : ''}>Last year</label></div>` +
-            `<span>${list.length} items</span><table><tr><th>Order ID</th><th>Customer refunded date</th><th>Disposition</th></tr>` +
+            (site.fbaEmptyText && !list.length ? `<div>${site.fbaEmptyText}</div>` : `<span>${list.length} items</span>`) + `<table><tr><th>Order ID</th><th>Customer refunded date</th><th>Disposition</th></tr>` +
             list.map((r) => `<tr><td><a href="#">${r.id}</a></td><td>${r.days} days ago</td><td>SELLABLE</td></tr>`).join('') + '</table>';
           w.document.querySelector('#d90 input').addEventListener('click', () => { days = 90; setTimeout(draw, 20); });
           w.document.querySelector('#d365 input').addEventListener('click', () => { days = 365; env.fbaWide = true; setTimeout(draw, 20); });
@@ -1252,6 +1252,23 @@ async function main() {
     btnOf(w, id(811)).click();
     await waitFor(() => st(env, id(811)).status === 'notEligible' && idle(w) && label(w, id(811)) !== 'Sending…', 15000, 'tap');
     check('G5 tap on an order Amazon says is not open → nothing sent', !env.posts, JSON.stringify(env.posts));
+  }
+
+
+  // F-empty: an FBA returns page with no returns (a seller who doesn't use FBA) counts as read
+  {
+    const site = new Site({ [id(901)]: { age: 12, amazon: 'eligible' } });
+    site.getMode = 'json';
+    site.fbaVia = 'link';
+    site.fbaReturns = [];
+    site.fbaEmptyText = 'No results found';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    await sleep(1500);
+    launcherOf(w).dispatchEvent(new w.MouseEvent('click', { bubbles: true, altKey: true }));
+    await waitFor(() => /Use Copy/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
+    const txt = w.document.querySelector('#nudge-diag textarea').value;
+    check('F-empty: empty FBA returns page → read, 0 orders (not "couldn\'t be read")', /Manage FBA returns: read · 0 orders/.test(txt), txt.split('\n').slice(1, 5).join(' / '));
   }
 
   await sleep(300);

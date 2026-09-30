@@ -1479,6 +1479,7 @@
   // answer (the same lookup the labels use) and flags any disagreement.
   // Nothing is sent or clicked, and nothing is saved.
   const DIAG_MAX = 100;
+  const clip = (t, n = 300) => String(t || '').replace(/\s+/g, ' ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email]').slice(0, n);
 
   function diagPanel() {
     let p = document.getElementById('nudge-diag');
@@ -1573,7 +1574,7 @@
           ? `Manage FBA returns: read · ${fbaIds.size} order${fbaIds.size === 1 ? '' : 's'} · filtered by ${f.filter} · range: ${f.range}`
           : f.missing
             ? 'Manage FBA returns: no FBA returns page on this account (fine if you don\'t use FBA)'
-            : `Manage FBA returns: couldn't be read (${f.why || 'unknown'})`
+            : `Manage FBA returns: couldn't be read (${f.why || 'unknown'})${f.snippet ? `\n  The page shows: ${clip(f.snippet, 300)}` : ''}`
       );
     }
     const onPage = ids.filter((id) => sf.has(id) || fbaIds.has(id) || rowReturn(id));
