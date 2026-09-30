@@ -517,7 +517,7 @@ class Env {
       this.createTab(new URL(u, url).href);
       return null;
     };
-    w.browser = { runtime: { sendMessage: (msg) => this.toBackground(msg, tab, owner) }, storage: this.storageApi(owner) };
+    w.browser = { runtime: { id: 'review-nudge-test', sendMessage: (msg) => this.toBackground(msg, tab, owner) }, storage: this.storageApi(owner) };
     w.__nudgeFrameLoader = (frame, u) => this.frameLoad(frame, u, tab);
     w.fetch = (u, opts) => this.api(new URL(u, url).href, opts || {});
     if (page.script) page.script(w, this, tab);
@@ -721,28 +721,6 @@ async function main() {
     check('B4 on Manage Returns → "↩ Returned · skipped", nothing sent', label(w, id(6)) === '↩ Returned · skipped' && !(env.posts || {})[id(6)] && popTitle(w) === 'Returned – skipped', `${label(w, id(6))} / ${popTitle(w)}`);
   }
 
-  // B5: v0.3's wrongly-closed orders are repaired; "not eligible" → "Request review" the next day
-  {
-    const y = localDay(daysAgo(1));
-    const store = S4();
-    store.statuses = {
-      [id(7)]: { status: 'closed', detail: "It was eligible on 2026-09-26; Amazon now says it isn't, so its window has passed.", checkedDay: localDay(), checkedAt: Date.now(), seenEligible: true },
-      [id(8)]: { status: 'eligible', checkedDay: localDay(), checkedAt: Date.now() },
-    };
-    const env = new Env(new Site({ [id(7)]: { age: 12, amazon: 'notEligible' }, [id(8)]: { age: 12, amazon: 'eligible' } }), { store });
-    const w = await ready(env, env.openList(), 2);
-    await waitFor(() => label(w, id(7)) === 'Request review', 2000, 'repair').catch(() => {});
-    check('B5 wrongly "Window closed" order is reopened ("Request review")', label(w, id(7)) === 'Request review' && label(w, id(8)) === 'Request review', `${label(w, id(7))} / ${label(w, id(8))}`);
-    await tap(env, w, id(7));
-    check('B5 Amazon still says no → "Not eligible yet" (not closed) + popup', st(env, id(7)).status === 'notEligible' && label(w, id(7)) === 'Not eligible yet' && popTitle(w) === 'Not eligible yet', label(w, id(7)));
-    env.store.statuses[id(7)].checkedDay = y;
-    env.site.orders[id(7)].amazon = 'eligible';
-    const w2 = await ready(env, env.openList(), 2);
-    check('B5 next day it says "Request review"', label(w2, id(7)) === 'Request review', label(w2, id(7)));
-    await tap(env, w2, id(7));
-    check('B5 and sends once Amazon allows it', st(env, id(7)).status === 'sent');
-  }
-
   // B6: one click on "Request Reviews" sends the whole page, no daily limit
   {
     const orders = {
@@ -775,7 +753,7 @@ async function main() {
     check('B6 Amazon.ca order used the Canada marketplace', st(env, id(20)).status === 'sent');
     check('B6 no tabs, no leftover frames', !env.bgTabs && frames(w) === 0 && openTabs(env).length === 1);
     check('B6 each sentence on its own line; dates never split', toastLines(w).length === 3 && toastLines(w)[0] === 'Done.' && /^Next batch: /.test(toastLines(w)[2]) && /Sep\u00a0|Oct\u00a0|[A-Z][a-z]{2}\u00a0\d/.test(toastOf(w).textContent), JSON.stringify(toastLines(w)));
-    check('B6 summary notice', /^Done\. Sent 63 · 2 returns\/refunds skipped · 1 already requested\. Next batch:/.test(toastText(w)), toastText(w));
+    check('B6 summary notice counts every return/refund skipped (row label, badge, Manage Returns)', /^Done\. Sent 63 · 3 returns\/refunds skipped · 1 already requested\. Next batch:/.test(toastText(w)), toastText(w));
   }
 
   // B7: quick send rejected → falls back to Amazon's page (Yes) → sent; switches after 2
@@ -852,13 +830,13 @@ async function main() {
 
   // B13: two tabs can't send at the same time
   {
-    const env = new Env(new Site({ [id(91)]: { age: 12, amazon: 'eligible', apiDelay: 800 }, [id(92)]: { age: 12, amazon: 'eligible' } }), { store: S4() });
+    const env = new Env(new Site({ [id(91)]: { age: 12, amazon: 'eligible', apiDelay: 3500 }, [id(92)]: { age: 12, amazon: 'eligible' } }), { store: S4() });
     const w1 = await ready(env, env.openList(), 2);
     const w2 = await ready(env, env.openList(), 2);
     btnOf(w1, id(91)).click();
     await waitFor(() => env.store.currentJob, 3000, 'job 1');
     btnOf(w2, id(92)).click();
-    await waitFor(() => /Another order is still being processed/.test(toastText(w2)), 3000, 'busy');
+    await waitFor(() => /Another order is still being processed/.test(toastText(w2)), 8000, 'busy');
     await waitFor(() => !env.store.currentJob && st(env, id(91)).status === 'sent', 10000, 'job 1');
     check('B13 second tab refused while the first is sending', !(env.posts || {})[id(92)]);
   }
@@ -874,7 +852,8 @@ async function main() {
 
   // B15: two errors in a row stop the run
   {
-    const orders = { [id(101)]: { age: 12, amazon: 'blank' }, [id(102)]: { age: 12, amazon: 'blank' }, [id(103)]: { age: 12, amazon: 'eligible' } };
+    // Amazon refuses the quick send outright (403) and its own page is broken: real errors, nothing sent.
+    const orders = { [id(101)]: { age: 12, amazon: 'blank', api: '403' }, [id(102)]: { age: 12, amazon: 'blank', api: '403' }, [id(103)]: { age: 12, amazon: 'eligible' } };
     const env = new Env(new Site(orders), { store: S4() });
     const w = await ready(env, env.openList(), 3);
     const end = await sendAll(w);
@@ -892,12 +871,13 @@ async function main() {
 
   // B17: error pill → "Request review" in the popup
   {
-    const orders = { [id(121)]: { age: 12, amazon: 'blank' } };
+    const orders = { [id(121)]: { age: 12, amazon: 'blank', api: '403' } };
     const env = new Env(new Site(orders), { store: S4() });
     const w = await ready(env, env.openList(), 1);
     await tap(env, w, id(121));
     check('B17 error popup opens automatically', popTitle(w) === "Didn't go through" && /Tap to see why/.test(toastText(w)));
     orders[id(121)].amazon = 'eligible';
+    delete orders[id(121)].api;
     popOf(w).querySelector('.nudge-pop-action').click();
     await waitFor(() => st(env, id(121)).status === 'sent' && idle(w), 10000, 'retry');
     check('B17 "Request review" in the popup sends it', label(w, id(121)) === 'Sent ✓');
@@ -914,18 +894,18 @@ async function main() {
     check('B18 nothing was sent or opened', !env.posts && !Object.keys(env.visits).length);
   }
 
-  // B19: a check-only job can never reach "sent" (background guard)
+  // B19: a message from an earlier order's job can never move or finish the current one
   {
     const env = new Env(new Site({ [id(141)]: { age: 12, req: 'none' } }));
-    const fakeTab = { id: 999, url: 'x' };
-    const res = await env.toBackground({ type: 'runJob', job: { orderId: id(141), url: `https://sellercentral.amazon.com/orders-v3/order/${id(141)}`, dryRun: true, mode: 'tab' } }, { id: 0, url: '' }, { closed: false });
+    const res = await env.toBackground({ type: 'runJob', job: { orderId: id(141), url: `https://sellercentral.amazon.com/orders-v3/order/${id(141)}`, mode: 'tab' } }, { id: 0, url: '' }, { closed: false });
     await waitFor(() => env.store.currentJob && env.store.currentJob.activeTabId, 2000, 'job');
     const t = { id: env.store.currentJob.activeTabId, url: '' };
-    const s1 = await env.toBackground({ type: 'stage', stage: 'confirmPage' }, t, { closed: false });
-    const s2 = await env.toBackground({ type: 'stage', stage: 'clickedYes' }, t, { closed: false });
-    check('B19 background refuses to let a check-only job send', res.ok && s1 === true && s2 === false);
-    await env.toBackground({ type: 'abortJob', orderId: id(141) }, fakeTab, { closed: false });
+    const wrong = await env.toBackground({ type: 'stage', stage: 'confirmPage', jobId: 'an-earlier-job' }, t, { closed: false });
+    const none = await env.toBackground({ type: 'jobResult', result: { status: 'sent' } }, t, { closed: false });
+    check('B19 stage/result without this job\'s id are ignored', res.ok && !!res.jobId && wrong === false && none === false && !!env.store.currentJob && !(env.store.statuses || {})[id(141)]);
+    await env.toBackground({ type: 'abortJob', orderId: id(141) }, { id: 999, url: 'x' }, { closed: false });
   }
+
 
   // R1: an order with a pending return on Manage Returns (new layout) is skipped
   {
@@ -1132,12 +1112,12 @@ async function main() {
     const env = new Env(site, { store });
     const t0 = Date.now();
     const w = await ready(env, env.openList(), 6);
-    await waitFor(() => label(w, id(601)) === 'Already requested' && label(w, id(605)) === 'Already requested' && label(w, id(603)) === 'Already requested', 15000, 'lookups').catch(() => {});
+    await waitFor(() => label(w, id(601)) === 'Already requested' && label(w, id(605)) === 'Sent ✓' && label(w, id(603)) === 'Already requested', 15000, 'lookups').catch(() => {});
     const L = (n) => label(w, id(n));
     check('V1 requested outside the extension → "Already requested" before any tap', L(601) === 'Already requested', L(601));
     check('V2 eligible order stays "Request review"', L(602) === 'Request review', L(602));
     check('V3 a saved error is replaced by Amazon\'s answer', L(603) === 'Already requested', L(603));
-    check('V4 "Needs a look" is settled by the lookup', L(605) === 'Already requested', L(605));
+    check('V4 "Needs a look" from an earlier day is settled: Amazon has the request → "Sent ✓"', L(605) === 'Sent ✓' && st(env, id(605)).status === 'sent', L(605));
     check('V5 old greyed-button guesses are forgotten', L(606) === 'Request review', L(606));
     check('V6 lookups are fast: whole page in a few seconds', Date.now() - t0 < 12000, `${Date.now() - t0} ms`);
     check('V7 lookups never send, open pages or press Yes', !env.posts && !Object.keys(env.visits).length && !Object.keys(env.yesClicks).length && !Object.keys(env.sends).length);
@@ -1269,6 +1249,247 @@ async function main() {
     await waitFor(() => /Use Copy/.test((w.document.querySelector('#nudge-diag textarea') || {}).value || ''), 60000, 'diagnostic');
     const txt = w.document.querySelector('#nudge-diag textarea').value;
     check('F-empty: empty FBA returns page → read, 0 orders (not "couldn\'t be read")', /Manage FBA returns: read · 0 orders/.test(txt), txt.split('\n').slice(1, 5).join(' / '));
+  }
+
+
+  // ===== Pre-1.0 review: each finding reproduced, then checked fixed =====
+
+  // H1: reloading the page while a request is in flight never leads to a second send
+  {
+    const X = id(1001);
+    const site = new Site({ [X]: { age: 12, amazon: 'eligible', apiDelay: 1500 } });
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const tabId = env.openList();
+    let w = await ready(env, tabId, 1);
+    await waitFor(() => st(env, X).verifiedDay === localDay(), 8000, 'lookup');
+    btnOf(w, X).click();
+    await waitFor(() => env.store.currentJob && env.store.currentJob.stage === 'clickedYes', 5000, 'clickedYes');
+    env.load(env.tabs.get(tabId), 'https://sellercentral.amazon.com/orders-v3/mfn/shipped'); // reload mid-send
+    w = await ready(env, tabId, 1);
+    await waitFor(() => !env.store.currentJob, 3000, 'job closed on reload').catch(() => {});
+    check('H1 reload closes the in-flight job right away (no 4-minute "busy")', !env.store.currentJob, JSON.stringify(env.store.currentJob));
+    // Right after the reload Amazon may still be processing it: "Needs a look" (or "Sent ✓" if it already answers).
+    await waitFor(() => env.sends[X] && (st(env, X).status === 'sent' || st(env, X).lookedAt), 8000, 'looked').catch(() => {});
+    if (st(env, X).status === 'unknown') {
+      env.store.statuses[X].lookedAt = Date.now() - 11 * 60 * 1000; // ten minutes later…
+      w = await ready(env, env.openList(), 1); // …the page is opened again
+    }
+    await waitFor(() => st(env, X).status === 'sent', 8000, 'settled').catch(() => {});
+    check('H1 a lookup settles it: Amazon has the request → "Sent ✓"', st(env, X).status === 'sent' && label(w, X) === 'Sent ✓', `${st(env, X).status} ${label(w, X)}`);
+    btnOf(w, X).click();
+    await sleep(600);
+    check('H1 one request in total, never a second', env.posts[X] === 1 && !env.yesClicks[X], `posts=${env.posts[X]}`);
+  }
+
+  // H2: a request whose reply is lost is confirmed with Amazon, never re-sent blindly
+  {
+    const X = id(1011);
+    const site = new Site({ [X]: { age: 12, amazon: 'eligible' } });
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    await sleep(1500);
+    const orig = env.api.bind(env);
+    env.api = async (u, o) => {
+      if (o.method === 'POST') {
+        await orig(u, o); // Amazon processed it…
+        throw new TypeError('Failed to fetch'); // …but the reply was lost
+      }
+      return orig(u, o);
+    };
+    await tap(env, w, X);
+    check('H2 lost reply + Amazon has the request → "Sent ✓", no retry', st(env, X).status === 'sent' && env.posts[X] === 1 && !env.yesClicks[X], `${st(env, X).status} posts=${env.posts[X]} yes=${env.yesClicks[X] || 0}`);
+
+    const Y = id(1012);
+    const site2 = new Site({ [Y]: { age: 12, amazon: 'eligible' } });
+    site2.getMode = 'json';
+    const env2 = new Env(site2, { store: S4() });
+    const w2 = await ready(env2, env2.openList(), 1);
+    await sleep(1500);
+    env2.api = async (u, o) => (o.method === 'POST' ? { type: 'basic', status: 503, json: async () => { throw new Error('html'); } } : Env.prototype.api.call(env2, u, o));
+    await tap(env2, w2, Y);
+    check('H2 server error and Amazon still accepts one → sent through Amazon\'s page, once', st(env2, Y).status === 'sent' && env2.yesClicks[Y] === 1, `${st(env2, Y).status} yes=${env2.yesClicks[Y] || 0}`);
+  }
+
+  // H3: a Manage Returns list that shows each order number twice is still read to the end
+  {
+    const keep = id(1021);
+    const ret = id(1022);
+    const many = [];
+    for (let n = 0; n < 22; n++) many.push(`112-5555555-${String(n).padStart(7, '0')}`);
+    const site = new Site({ [keep]: { age: 12, amazon: 'eligible' }, [ret]: { age: 12, amazon: 'eligible' } });
+    site.returnsLayout = 'newBroken'; // classic list: 10 per page, Next button
+    site.classicSizes = false;
+    site.returns = [...many, ret]; // 23 returns; the one that matters is on page 3
+    const base = site.classicReturns.bind(site);
+    site.classicReturns = function () {
+      const page = base();
+      return {
+        ...page,
+        script: (w, e) => {
+          page.script(w, e);
+          const obs = new w.MutationObserver(() => {
+            for (const row of w.document.querySelectorAll('.row:not([data-dup])')) {
+              row.setAttribute('data-dup', '');
+              row.insertAdjacentHTML('beforeend', ` <span>Order ${row.querySelector('a').textContent}</span>`);
+            }
+          });
+          obs.observe(w.document.getElementById('list'), { childList: true, subtree: true });
+        },
+      };
+    };
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 2);
+    const end = await sendAll(w);
+    check('H3 duplicated order numbers: all 3 pages read, the page-3 return skipped', env.returnPages === 2 && st(env, ret).status === 'skippedReturn' && !(env.posts || {})[ret] && st(env, keep).status === 'sent', `pages=${env.returnPages} ${st(env, ret).status} | ${end}`);
+  }
+
+  // H4: an FBA returns page that doesn't load is reported in the summary
+  {
+    const keep = id(1031);
+    const site = new Site({ [keep]: { age: 12, amazon: 'eligible' } });
+    site.fbaVia = 'link';
+    site.fbaReturns = [];
+    site.fbaPage = () => ({ html: '<h1>Loading…</h1>' }); // the FBA page never shows up
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    const end = await sendAll(w);
+    check('H4 FBA returns unreadable → the summary says so', /Manage FBA returns couldn't be read/.test(end), end);
+  }
+
+  // H5: a slow Amazon page that answers late can't finish the next order's job
+  {
+    const X = id(1041);
+    const Y = id(1042);
+    const site = new Site({ [X]: { age: 12, amazon: 'eligible', req: 'none', result: 'none' }, [Y]: { age: 12, amazon: 'eligible' } });
+    const env = new Env(site, { store: S4({ method: 'page', switchedDay: localDay() }) });
+    const orig = Env.prototype.frameLoad;
+    env.frameLoad = async function (frame, url, tab) {
+      if (/\/messaging\/reviews/.test(url)) await sleep(900);
+      return orig.call(this, frame, url, tab);
+    };
+    const w = await ready(env, env.openList(), 2);
+    await sleep(1500);
+    btnOf(w, X).click();
+    await waitFor(() => st(env, X).status && idle(w), 20000, 'X').catch(() => {});
+    btnOf(w, Y).click();
+    await waitFor(() => st(env, Y).status && idle(w) && !env.store.currentJob, 20000, 'Y').catch(() => {});
+    await sleep(3000); // X's page is still "answering" in the background
+    check('H5 the next order gets its own answer ("Sent ✓"), untouched by the slow one', st(env, Y).status === 'sent' && label(w, Y) === 'Sent ✓', `${st(env, Y).status} ${st(env, Y).detail}`);
+  }
+
+  // M1: lookups that failed at page load get a fresh chance when a run starts; a sign-in stops the run
+  {
+    const orders = {};
+    for (let n = 1; n <= 5; n++) orders[id(1050 + n)] = { age: 12, amazon: 'eligible' };
+    orders[id(1059)] = { age: 25, amazon: 'notEligible' }; // estimate says open; Amazon says no
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    let failGets = 5;
+    env.api = async (u, o) => (o.method === 'GET' && failGets-- > 0 ? { type: 'basic', status: 503, json: async () => { throw new Error('html'); } } : Env.prototype.api.call(env, u, o));
+    const w = await ready(env, env.openList(), 6);
+    await sleep(3500);
+    const end = await sendAll(w);
+    check('M1 the run asks Amazon again and never sends to the order Amazon refuses', !(env.posts || {})[id(1059)] && Object.keys(env.sends).length === 5, `${JSON.stringify(env.posts)} | ${end}`);
+
+    const site2 = new Site({ [id(1061)]: { age: 12, amazon: 'eligible' } });
+    site2.getMode = 'json';
+    const env2 = new Env(site2, { store: S4() });
+    const w2 = await ready(env2, env2.openList(), 1);
+    await sleep(1500);
+    env2.api = async () => ({ type: 'opaqueredirect', status: 0, json: async () => { throw new Error('none'); } });
+    for (const k of Object.keys(env2.store.statuses || {})) env2.store.statuses[k].verifiedDay = localDay(daysAgo(1));
+    const end2 = await sendAll(w2);
+    check('M1 signed out: the run stops and says so, nothing sent', /sign in again/.test(end2) && !Object.keys(env2.sends).length, end2);
+  }
+
+  // M2: a returned order on a page opened later (Amazon's Next) is marked, not "Request review"
+  {
+    const orders = {};
+    [5, 6, 7, 8, 9, 10].forEach((a, k) => (orders[id(1070 + k)] = { age: 10 + k, amazon: 'eligible' }));
+    const site = new Site(orders);
+    site.pageSize = 3;
+    site.getMode = 'json';
+    const onPage2 = id(1074);
+    site.returns = [onPage2];
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 3);
+    await sleep(3000);
+    w.document.querySelector('.a-last a').click();
+    await waitFor(() => btnOf(w, onPage2) && btnOf(w, onPage2).isConnected, 5000, 'page 2');
+    await waitFor(() => label(w, onPage2) === '↩ Returned · skipped', 5000, 'marked').catch(() => {});
+    check('M2 return on a later page → "↩ Returned · skipped" right away', label(w, onPage2) === '↩ Returned · skipped', label(w, onPage2));
+  }
+
+  // M3: two quick taps never start two orders at once
+  {
+    const orders = {};
+    for (let n = 1; n <= 4; n++) orders[id(1080 + n)] = { age: 12, amazon: 'eligible', apiDelay: 300 };
+    const site = new Site(orders);
+    site.getMode = 'json';
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 4);
+    await sleep(600);
+    btnOf(w, id(1083)).click();
+    btnOf(w, id(1084)).click(); // a double tap: both land before anything is awaited
+    const seen = new Set();
+    for (const end = Date.now() + 5000; Date.now() < end; ) {
+      if (toastText(w)) seen.add(toastText(w));
+      await sleep(20);
+    }
+    check('M3 second tap while the first is sending does nothing but explain; only the first is sent', st(env, id(1083)).status === 'sent' && !(env.posts || {})[id(1084)] && ![...seen].some((t) => /another tab/.test(t)), JSON.stringify([...seen]));
+  }
+
+  // L1/L2: every return counted once; a stop that isn't a click still shows the summary
+  {
+    const site = new Site({ [id(1091)]: { age: 12, amazon: 'eligible' }, [id(1092)]: { age: 12, amazon: 'eligible' } });
+    site.returns = [id(1091)];
+    const env = new Env(site, { store: S4() });
+    const w = await ready(env, env.openList(), 2);
+    const end = await sendAll(w);
+    check('L1 a return is counted once in the summary', /^Done\. Sent 1 · 1 return\/refund skipped\./.test(end), end);
+
+    const orders = {};
+    [10, 11, 12, 13].forEach((a, k) => (orders[id(1093 + k)] = { age: a, amazon: 'eligible' }));
+    const site2 = new Site(orders);
+    site2.pageSize = 2;
+    const env2 = new Env(site2, { store: S4() });
+    const w2 = await ready(env2, env2.openList(), 2);
+    const a = w2.document.querySelector('.a-last a');
+    a.replaceWith(a.cloneNode(true)); // Next is enabled but does nothing
+    launcherOf(w2).click();
+    const end2 = await waitFor(() => idle(w2) && statusText(w2), 70000, 'run end');
+    check('L2 "next page didn\'t load" is shown as a notice', /next page of orders didn't load/.test(toastText(w2)), `${toastText(w2)} | ${end2}`);
+  }
+
+  // L3: over 30 days old and Amazon said no yesterday → still asked today, sent if Amazon now accepts
+  {
+    const y = localDay(daysAgo(1));
+    const store = S4();
+    store.statuses = { [id(1101)]: { status: 'notEligible', detail: 'Outside', checkedDay: y, verifiedDay: y, checkedAt: Date.now() - 86400000, firstIneligibleDay: y } };
+    const site = new Site({ [id(1101)]: { age: 31, transit: 8, status: 'delivered', amazon: 'eligible' } });
+    site.getMode = 'json';
+    const env = new Env(site, { store });
+    const w = await ready(env, env.openList(), 1);
+    await waitFor(() => st(env, id(1101)).verifiedDay === localDay(), 8000, 'lookup').catch(() => {});
+    check('L3 not written off after one "no": looked up again and ready', st(env, id(1101)).status === 'eligible' && label(w, id(1101)) === 'Request review', `${st(env, id(1101)).status} ${label(w, id(1101))}`);
+  }
+
+  // L4: "Needs a look" + Amazon still accepts one on the same day → left for a person, asked again tomorrow
+  {
+    const store = S4();
+    store.statuses = { [id(1111)]: { status: 'unknown', detail: 'x', checkedDay: localDay(), checkedAt: Date.now() } };
+    const site = new Site({ [id(1111)]: { age: 12, amazon: 'eligible' } });
+    site.getMode = 'json';
+    const env = new Env(site, { store });
+    const w = await ready(env, env.openList(), 1);
+    await waitFor(() => st(env, id(1111)).lookedAt, 6000, 'looked').catch(() => {});
+    const gets = (env.gets || {})[id(1111)];
+    await ready(env, env.openList(), 1);
+    await sleep(2500);
+    check('L4 same-day "Needs a look" stays, and isn\'t asked about again within 10 minutes', st(env, id(1111)).status === 'unknown' && label(w, id(1111)) === 'Needs a look' && gets === 1 && env.gets[id(1111)] === 1, `${st(env, id(1111)).status} gets=${env.gets && env.gets[id(1111)]}`);
   }
 
   await sleep(300);

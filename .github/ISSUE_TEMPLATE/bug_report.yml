@@ -16,13 +16,18 @@ body:
     id: version
     attributes:
       label: ReviewNudge version
-      description: From manifest.json or your browser's extensions page, e.g. 0.8.0
+      description: From manifest.json or your browser's extensions page, e.g. 1.0.0
   - type: textarea
     id: what
     attributes:
       label: What happened?
       description: What you clicked, what the label or summary said, and what you expected instead.
     validations: { required: true }
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic (optional)
+      description: Option-click (Alt-click) Request Reviews and paste the lines starting with "Manage Returns", "Manage FBA returns" and "Labels that agree". Leave out lines with order numbers, or replace the numbers with xxx.
   - type: textarea
     id: screenshot
     attributes:

@@ -1,13 +1,13 @@
 // Seller Central orders list.
-// - "Request Reviews" in Amazon's toolbar: one click sends Amazon's review
-//   request to every eligible order, page after page (Amazon's Next), then
-//   shows a summary with the next days orders open. Click again to stop.
-// - Orders on Manage Returns (any status) are never sent; if that list can't
-//   be read in full, nothing is sent.
-// - A pill under each order number: tap "Request review" to send just that
-//   order. Returned/refunded orders show "↩ Returned · skipped" and are never sent.
-// Everything else is automatic: returns are always checked, and the fastest
-// working way to send is picked (with fallbacks) without any settings.
+// - "Request Reviews" in Amazon's toolbar: one click asks Amazon about every order
+//   on the page, sends Amazon's review request to the ones Amazon says can be
+//   requested, goes on page after page (Amazon's Next), then shows a summary with
+//   the next days orders open. Click again to stop.
+// - A label under each order number, from Amazon's own answer (looked up once a
+//   day, read-only). Tap "Request review" to send just that order.
+// - Orders on Manage Returns / Manage FBA returns, or with a return or refund in
+//   their row, are never sent. If a returns list can't be read, the summary says so.
+// No settings: the fastest working way to send is picked, with fallbacks.
 // This script only reads order results; the background script writes them.
 (() => {
   if (window.top !== window) return;
@@ -16,12 +16,12 @@
   const GAP_MIN_MS = 3000; // pause between orders when sending the whole page
   const GAP_MAX_MS = 6000;
   const RESULT_TIMEOUT_MS = 60000; // give up on one order after this
+  const POST_TIMEOUT_MS = 20000; // the quick send's own time limit
   const RESCAN_MS = 3000;
   const FRAME_LOAD_TIMEOUT_MS = 25000; // an Amazon page loading in the invisible frame
   const OPENS_AFTER_DELIVERY_DAYS = 5; // Amazon: requests 5–30 days after delivery
   const TYPICAL_TRANSIT_DAYS = 3; // used only when an order has no "Deliver by" date
   const TOO_OLD_DAYS = 45; // well past 30 days after any normal delivery
-  const COMING_UP_DAYS = 7;
   const MAX_PAGES = 100; // 100 orders per page → up to 10,000 orders in one run
   const NEXT_PAGE_TIMEOUT_MS = 30000;
   const PAGE_SETTLE_MS = 1500; // new page must stop changing this long before it's used
@@ -33,7 +33,7 @@
   const RETURNS_URLS = [
     `/manage/returns/mfn?~return_status=Approved%2CPendingLabel%2CPendingRefund%2CPendingApproval%2CCompleted&~return_request_date%3Adr=preset%2C90%2C90%2Cday&~marketplace_id=${RETURN_MARKETPLACES}`,
     `/gp/returns/list/v2?searchBy=undefined&searchString=null&marketplaceIds=${RETURN_MARKETPLACES}&tabId=undefined&returnRequestState=undefined&orderBy=CreatedDateDesc&selectedDateRange=90&pendingActionsFilterBy=null&isOnPendingActionsTab=false`,
-  ]; // "coming up" in the summary = opens within this many days
+  ];
   const MARKETPLACES = [
     [/amazon\.com\.mx/i, 'A1AM78C64UM0Y8'],
     [/amazon\.com\.br/i, 'A2Q3Y263D00KWC'],
@@ -68,13 +68,13 @@
   // Internal only: how orders are sent. 'fast' = the same request Amazon's Yes
   // button sends; 'page' = through Amazon's Request a Review page. Switches by itself.
   let settings = { method: 'fast', frameBlocked: false, v: 5 };
-  let busy = false;
+  let busy = false; // sending, or the diagnostic is running: one thing at a time
+  let inBatch = false; // a Request Reviews run is going (the button stops it)
   let stopRequested = false;
-  let progress = null; // { i, n } while sending the whole page
+  let progress = null; // { i, n, page, check? } while a run goes through a page
   let checkingReturns = false;
-  let listSkips = 0; // orders marked from Manage Returns during the current run
-  let returnsUnread = false; // Manage Returns couldn't be read during the current run
-  let returnsList = null; // { at, ids: Set } from Manage Returns
+  let returnsUnread = ''; // which returns list couldn't be read during the current run
+  let returnsList = null; // { at, ids: Set, failed?, fbaFailed? } from Manage Returns + Manage FBA returns
   let attention = false; // something failed; red dot on the toolbar button
   const buttons = new Map(); // orderId -> pill
   const anchors = new Map(); // orderId -> the order number element
@@ -86,7 +86,22 @@
   const frameLoader = realFrameLoader;
 
   const get = async (keys) => (await api.storage.local.get(keys)) || {};
-  const send = (msg) => Promise.resolve(api.runtime.sendMessage(msg)).catch(() => null);
+  // After the extension is reloaded or updated, this old copy of the script can't
+  // reach it anymore: every call fails, so say so instead of hanging.
+  const alive = () => {
+    try {
+      return !!(api.runtime && api.runtime.id);
+    } catch (e) {
+      return false;
+    }
+  };
+  const send = (msg) => {
+    try {
+      return Promise.resolve(api.runtime.sendMessage(msg)).catch(() => null);
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  };
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -112,6 +127,12 @@
   function closesOn(b) {
     const opens = opensOn(b);
     return opens ? addDays(opens, 30 - OPENS_AFTER_DELIVERY_DAYS) : '';
+  }
+  // Past the window by the dates alone (no need to ask Amazon).
+  function pastByDates(b, today) {
+    const closes = closesOn(b);
+    const age = b.dataset.nudgeDate ? daysBetween(b.dataset.nudgeDate, today) : null;
+    return !!((closes && today > closes) || (age !== null && age > TOO_OLD_DAYS));
   }
 
   // ---------- what each pill says ----------
@@ -153,7 +174,10 @@
         case 'unknown':
           return V('Needs a look', 'warn', 'need a look', { final: true });
         case 'notEligible':
-          if (isPast || (!notOpenYet && age0 !== null && age0 > 30)) return past();
+          if (isPast) return past();
+          // Over 30 days old and Amazon says no: almost certainly closed. Not final:
+          // it's still asked about once a day until the dates say it's past.
+          if (!notOpenYet && age0 !== null && age0 > 30 && rec.checkedDay === today) return V('⊘ Past 30 days', 'past', 'past 30 days');
           if (rec.checkedDay === today) return waiting();
           break;
         case 'error':
@@ -185,21 +209,26 @@
       return { tone: 'returned', title: rec.returnKind === 'refund' ? 'Refunded – skipped' : 'Returned – skipped', line: rec.detail };
     }
     const closes = closesOn(b);
-    const pastNow = s === 'closed' || (s !== 'sent' && s !== 'already' && s !== 'skippedReturn' && ((closes && today > closes) || (age !== null && age > TOO_OLD_DAYS) || (s === 'notEligible' && !(opens && opens > today) && age !== null && age > 30)));
-    if (pastNow) return { tone: 'muted', title: 'Past the 30-day window', line: `Amazon only allows requests up to 30 days after delivery${closes ? ` (last day ~${shortDate(closes)})` : ''}. This order can't be requested.` };
-    if (s === 'unknown') return { tone: 'warn', title: 'Needs a look', line: "Couldn't confirm it went through. Check this order in Seller Central." };
+    if (s === 'unknown') return { tone: 'warn', title: 'Needs a look', line: "Yes was pressed, but Amazon's answer wasn't seen. ReviewNudge asks Amazon again tomorrow, or check this order in Seller Central." };
+    const pastNow = s === 'closed' || pastByDates(b, today) || (s === 'notEligible' && isToday && !(opens && opens > today) && age !== null && age > 30);
+    if (pastNow) return { tone: 'muted', title: 'Past the 30-day window', line: `Amazon only allows requests up to 30 days after delivery${closes ? ` (last day ~${shortDate(closes)})` : ''}.` };
     if (s === 'notEligible' && isToday) {
-      return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}It's included again next time you click Request Reviews.`, action: 'Try now' };
+      return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}Amazon said not yet today. ReviewNudge asks again tomorrow.`, action: 'Try now' };
     }
     if (s === 'error' && isToday) return { tone: 'err', title: "Didn't go through", line: rec.detail, action: 'Request review' };
-    if (!s && opens && opens > today) {
-      return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}Request Reviews picks it up once it opens.`, action: 'Try anyway' };
+    if (opens && opens > today) {
+      return { tone: 'muted', title: 'Not eligible yet', line: `${openLine}Request Reviews picks it up once Amazon opens it.`, action: 'Try now' };
     }
-    if (!s && age !== null && age < OPENS_AFTER_DELIVERY_DAYS) {
-      return { tone: 'muted', title: 'Not eligible yet', line: 'Ordered less than 5 days ago. Request Reviews picks it up once it opens.', action: 'Try anyway' };
+    if (age !== null && age < OPENS_AFTER_DELIVERY_DAYS) {
+      return { tone: 'muted', title: 'Not eligible yet', line: 'Ordered less than 5 days ago. Request Reviews picks it up once Amazon opens it.', action: 'Try now' };
     }
-    if (!s && age !== null && age > TOO_OLD_DAYS) return { tone: 'muted', title: 'Window closed', line: `Ordered ${age} days ago.`, action: 'Try anyway' };
-    return { tone: 'info', title: 'Ready to request', line: 'Amazon accepts a review request for this order.', action: 'Request review' };
+    const confirmed = s === 'eligible' && rec.verifiedDay === today;
+    return {
+      tone: 'info',
+      title: 'Ready to request',
+      line: confirmed ? 'Amazon says it accepts a review request for this order.' : 'Should be open now. Amazon is asked first, and nothing is sent unless it says yes.',
+      action: 'Request review',
+    };
   }
 
   // ---------- pills ----------
@@ -415,11 +444,16 @@
     b.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.altKey && !busy) return diagnose(); // Option-click: read-only check of what Amazon answers
-      if (busy && progress) {
-        stopRequested = true;
+      if (inBatch) {
+        stopRequested = true; // stops after the current order
         renderLauncher();
-      } else if (!busy) runBatch();
+      } else if (busy) {
+        notice('Busy – wait for the current order to finish.', 'info');
+      } else if (e.altKey) {
+        diagnose(); // Option-click: read-only check of labels against Amazon
+      } else {
+        runBatch();
+      }
     });
     return b;
   }
@@ -495,15 +529,17 @@
         ? 'Stopping…'
         : checkingReturns
           ? 'Checking returns…'
-          : busy && progress && progress.check
+          : inBatch && progress && progress.check
           ? `${progress.page > 1 ? `Page ${progress.page} · ` : ''}Checking ${progress.i} of ${progress.n} with Amazon · Stop`
-          : busy && progress && !progress.n
+          : inBatch && progress && !progress.n
           ? `Opening page ${progress.page} · Stop`
-          : busy && progress
+          : inBatch && progress
           ? `${progress.page > 1 ? `Page ${progress.page} · ` : ''}Sending ${progress.i} of ${progress.n} · Stop`
-          : busy
-            ? 'Starting…'
-            : 'Request Reviews';
+          : inBatch
+            ? 'Starting… · Stop'
+            : busy
+              ? 'Working…'
+              : 'Request Reviews';
     // Working: a spinning ring, so a click is answered right away. Idle with a problem: a red dot.
     const working = busy || checkingReturns;
     Object.assign(dot.style, {
@@ -519,14 +555,17 @@
       flex: 'none',
     });
     launcher.setAttribute('aria-busy', working ? 'true' : 'false');
-    launcher.style.cursor = busy && !progress ? 'progress' : 'pointer';
-    launcher.title = busy && progress ? 'Click to stop after the current order' : 'Send review requests to every eligible order on this page';
+    launcher.style.cursor = busy && !inBatch ? 'progress' : 'pointer';
+    launcher.title = inBatch
+      ? 'Click to stop after the current order'
+      : `Send review requests to every order Amazon says can be requested.${launcher.dataset.status ? `\nLast: ${launcher.dataset.status.replace(/\u00a0/g, ' ')}` : ''}\nOption-click: check the labels against Amazon (read-only).`;
   }
 
   // Last message, kept on the button (hover to see it).
   function setStatus(text) {
     if (!launcher) return;
     launcher.dataset.status = text;
+    renderLauncher();
   }
 
   // ---------- per-order popup ----------
@@ -637,11 +676,12 @@
         else row.anchor.insertAdjacentElement('afterend', line);
         buttons.set(row.id, b);
         added = true;
-        // Returned/refunded according to the orders list itself: mark it right away.
-        const ret = rowReturn(row.id);
+        // A return or refund in the row itself, or on the returns lists already read: mark it right away.
         const rec = lastStatuses[row.id];
-        if (ret && !(rec && FINAL_STATUSES.includes(rec.status))) {
-          send({ type: 'markReturn', orderId: row.id, detail: `Orders list shows "${ret.phrase}".`, returnKind: ret.returnKind, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
+        if (!(rec && FINAL_STATUSES.includes(rec.status))) {
+          const ret = rowReturn(row.id);
+          if (ret) send({ type: 'markReturn', orderId: row.id, detail: `Orders list shows "${ret.phrase}".`, returnKind: ret.returnKind, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
+          else if (returnsList && returnsList.ids.has(row.id)) send(returnMark(row.id, b));
         }
       }
       if (added) {
@@ -654,14 +694,20 @@
   }
 
   // ---------- sending one order ----------
+  // Resolves with the order's record once the background has saved a result for
+  // it (after t0), or a timeout result. Never hangs.
   function waitForResult(id, t0) {
     return new Promise((resolve) => {
       let done = false;
       const check = async () => {
         if (done) return;
-        const { statuses = {} } = await get(['statuses']);
-        const rec = statuses[id];
-        if (rec && rec.checkedAt >= t0) finish(rec);
+        try {
+          const { statuses = {} } = await get(['statuses']);
+          const rec = statuses[id];
+          if (rec && rec.checkedAt >= t0) finish(rec);
+        } catch (e) {
+          /* storage unavailable (extension reloaded): the timer below still ends the wait */
+        }
       };
       const onChange = (changes, area) => {
         if ((!area || area === 'local') && changes.statuses) check();
@@ -677,15 +723,24 @@
         done = true;
         clearInterval(poll);
         clearTimeout(timer);
-        api.storage.onChanged.removeListener(onChange);
+        try {
+          api.storage.onChanged.removeListener(onChange);
+        } catch (e) {
+          /* extension reloaded */
+        }
         resolve(rec);
       }
-      api.storage.onChanged.addListener(onChange);
+      try {
+        api.storage.onChanged.addListener(onChange);
+      } catch (e) {
+        /* extension reloaded: polling and the timer still work */
+      }
       check();
     });
   }
 
   function notStarted(res) {
+    if (res && res.reason === 'final' && res.record) return res.record; // already finished (maybe in another tab): nothing to send
     const detail = !res
       ? "The extension didn't respond. Reload this page and try again."
       : res.reason === 'busy'
@@ -694,10 +749,15 @@
     return { status: 'error', fatal: true, detail, unrecorded: true };
   }
 
+  // Every message about a job carries its id, so a late message from an earlier
+  // order can never move or finish the next one.
   const startJob = (id, b, mode) =>
-    send({ type: 'runJob', job: { orderId: id, url: b.dataset.nudgeUrl, dryRun: false, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null, mode } });
-  const reportJob = (result) => send({ type: 'jobResult', result });
-  const stageJob = async (stage, note) => (await send({ type: 'stage', stage, note })) === true;
+    send({ type: 'runJob', job: { orderId: id, url: b.dataset.nudgeUrl, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null, mode, marketplaceId: marketplaceFor(id) } });
+  const reportJob = (jobId, result) => send({ type: 'jobResult', jobId, result });
+  const stageJob = async (jobId, stage, note) => (await send({ type: 'stage', jobId, stage, note })) === true;
+
+  // Resolves with `value` if `promise` hasn't settled after `ms`.
+  const withTimeout = (promise, ms, value) => Promise.race([promise, sleep(ms).then(() => value)]);
 
   // An invisible frame on this page for loading Amazon's own pages.
   function makeFrame() {
@@ -743,10 +803,17 @@
     });
   }
 
-  function frameIo(frame, startUrl) {
+  // How amazon-pages.js reads and drives the invisible frame. With a jobId it can
+  // move that job forward; kill() makes every later step a no-op.
+  function frameIo(frame, startUrl, jobId) {
     let currentUrl = startUrl;
+    let dead = false;
     return {
       frame: true,
+      dead: () => dead,
+      kill: () => {
+        dead = true;
+      },
       doc: () => {
         try {
           return frame.contentDocument;
@@ -763,16 +830,15 @@
         }
       },
       navigate: async (u) => {
+        if (dead) return 'blocked';
         currentUrl = u;
         return frameLoader(frame, u);
       },
-      setStage: stageJob,
-      report: reportJob,
+      setStage: async (stage, note) => !dead && !!jobId && stageJob(jobId, stage, note),
+      report: async (result) => (!dead && jobId ? reportJob(jobId, result) : false),
     };
   }
 
-  // Every order on Manage Returns (any status: requested, pending, approved,
-  // completed…), read in an invisible frame. { ok } or { ok: false, why }.
   // Seller Central's own "Manage Returns" link, if this page has one (works in
   // every region and uses the seller's own marketplaces).
   function menuReturnsUrl() {
@@ -790,50 +856,70 @@
     return '';
   }
 
+  // Every order on Manage Returns (any status: requested, pending, approved,
+  // completed…) and on Manage FBA returns, read in an invisible frame.
+  // { ok, ids, sfIds, fbaIds, fba: 'read' | 'none' | 'failed', via } or
+  // { ok: false, why, ids } (ids = whatever could be read) or { blocked, why }.
   async function readReturnsList() {
     const whys = [];
-    const urls = [menuReturnsUrl(), ...RETURNS_URLS.map((p) => `${location.origin}${p}`)].filter((u, i, all) => u && all.indexOf(u) === i);
+    let partial = [];
+    const menu = menuReturnsUrl();
+    const urls = [menu, ...RETURNS_URLS.map((p) => `${location.origin}${p}`)].filter((u, i, all) => u && all.indexOf(u) === i);
     for (const url of urls) {
       const frame = makeFrame();
+      const io = frameIo(frame, url);
       try {
-        const io = frameIo(frame, url);
         if ((await io.navigate(url)) === 'blocked') {
           whys.push("the returns page couldn't be opened");
           continue;
         }
-        const r = await Promise.race([
-          globalThis.__nudgeReadReturns(io),
-          sleep(RETURNS_READ_TIMEOUT_MS).then(() => ({ ok: false, why: 'the returns list took too long' })),
-        ]);
+        const r = await withTimeout(globalThis.__nudgeReadReturns(io), RETURNS_READ_TIMEOUT_MS, { ok: false, why: 'the returns list took too long' });
         if (r.blocked) return r; // a CAPTCHA or sign-in page: don't try again elsewhere
-        if (r.ok) {
-          r.via = url === urls[0] && url === menuReturnsUrl() ? "Seller Central's Manage Returns link" : /gp\/returns/.test(url) ? 'the classic Manage Returns page' : 'the Manage Returns page';
-          r.sfIds = r.ids.slice();
-          // FBA returns live on their own page, one click away. Best effort, and
-          // silent when the account has no FBA returns page.
-          const fba = await Promise.race([
-            globalThis.__nudgeReadFbaReturns(io),
-            sleep(RETURNS_READ_TIMEOUT_MS).then(() => ({ ok: false, why: 'the FBA returns list took too long' })),
-          ]).catch((e) => ({ ok: false, why: e && e.message }));
-          if (fba.blocked) return fba;
-          if (fba.ok) r.ids = r.ids.concat(fba.ids);
-          r.fba = fba.ok ? 'read' : fba.missing ? 'none' : 'failed';
-          r.fbaInfo = fba; // for the diagnostic
-          return r;
+        if (!r.ok) {
+          whys.push(r.why);
+          if (r.ids && r.ids.length > partial.length) partial = r.ids;
+          continue;
         }
-        whys.push(r.why);
+        r.via = url === menu ? "Seller Central's Manage Returns link" : /gp\/returns/.test(url) ? 'the classic Manage Returns page' : 'the Manage Returns page';
+        r.sfIds = r.ids.slice();
+        // FBA returns live on their own page, one click away. Silent when the
+        // account has no FBA returns page; reported when it has one that can't be read.
+        const fba = await withTimeout(globalThis.__nudgeReadFbaReturns(io), RETURNS_READ_TIMEOUT_MS, { ok: false, why: 'the FBA returns list took too long' }).catch((e) => ({
+          ok: false,
+          why: e && e.message,
+        }));
+        if (fba.blocked) return fba;
+        r.fbaIds = fba.ids || [];
+        r.ids = r.sfIds.concat(r.fbaIds);
+        r.fba = fba.ok ? 'read' : fba.missing ? 'none' : 'failed';
+        r.fbaInfo = fba; // for the diagnostic
+        return r;
       } catch (e) {
         whys.push(`unexpected problem: ${e && e.message}`);
       } finally {
+        io.kill();
         frame.remove();
       }
     }
-    return { ok: false, why: whys[whys.length - 1] || 'unknown' };
+    return { ok: false, why: whys[whys.length - 1] || 'unknown', ids: partial };
   }
 
-  // Makes sure the returns list is fresh, and marks matching orders on this page.
+  const returnMark = (id, b) => ({
+    type: 'markReturn',
+    orderId: id,
+    detail: returnsList && returnsList.fbaIds.has(id) && !returnsList.sfIds.has(id) ? 'This order has a return on Manage FBA returns.' : 'This order has a return request on Manage Returns.',
+    returnKind: 'return',
+    orderDate: (b && b.dataset.nudgeDate) || null,
+    closesOn: (b && closesOn(b)) || null,
+  });
+
+  // Makes sure the returns lists are fresh, and marks matching orders on this page.
+  // Best effort: whatever could be read is used, and a list that couldn't be read
+  // in full is noted in the run's summary. A CAPTCHA or sign-in page stops everything.
   async function ensureReturns() {
-    if (returnsList && Date.now() - returnsList.at < RETURNS_REFRESH_MS) return { ok: !returnsList.failed, why: returnsList.failed };
+    if (returnsList && Date.now() - returnsList.at < RETURNS_REFRESH_MS) {
+      return { ok: !returnsList.failed && !returnsList.fbaFailed, why: returnsList.failed || returnsList.fbaFailed };
+    }
     checkingReturns = true;
     renderLauncher();
     let r;
@@ -844,31 +930,33 @@
       renderLauncher();
     }
     if (r.blocked) return { ok: false, blocked: true, why: r.why }; // Amazon wants a person: stop, don't cache
-    if (!r.ok) {
-      // Best effort: keep going without it; orders-page labels are still checked.
-      returnsList = { at: Date.now(), ids: new Set(), failed: r.why };
-      returnsUnread = true;
-      return { ok: false, why: r.why };
-    }
-    returnsList = { at: Date.now(), ids: new Set(r.ids) };
+    returnsList = {
+      at: Date.now(),
+      ids: new Set(r.ids || []),
+      sfIds: new Set(r.sfIds || r.ids || []),
+      fbaIds: new Set(r.fbaIds || []),
+      failed: r.ok ? '' : r.why || 'unknown',
+      fbaFailed: r.ok && r.fba === 'failed' ? (r.fbaInfo && r.fbaInfo.why) || 'unknown' : '',
+    };
+    if (returnsList.failed) returnsUnread = 'sf';
+    else if (returnsList.fbaFailed && !returnsUnread) returnsUnread = 'fba';
     const { statuses = {} } = await get(['statuses']);
-    let marked = 0;
     for (const [id, b] of buttons) {
       const rec = statuses[id];
-      if (returnsList.ids.has(id) && !(rec && FINAL_STATUSES.includes(rec.status))) {
-        marked++;
-        if (b.isConnected && viewOf(rec, b, localDay()).batch) listSkips++;
-        await send({ type: 'markReturn', orderId: id, detail: 'This order has a return request on Manage Returns.', returnKind: 'return', orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
-      }
+      if (returnsList.ids.has(id) && !(rec && FINAL_STATUSES.includes(rec.status))) await send(returnMark(id, b));
     }
     await repaintAll();
-    return { ok: true, marked };
+    return { ok: !returnsList.failed && !returnsList.fbaFailed, why: returnsList.failed || returnsList.fbaFailed };
   }
 
-  const RETURNS_NOTE = "Manage Returns couldn't be read, so only returns shown on the orders page were skipped.";
+  const RETURNS_NOTES = {
+    sf: "Manage Returns couldn't be read in full, so returns not shown on the orders page may not have been skipped.",
+    fba: "Manage FBA returns couldn't be read, so FBA returns not shown on the orders page may not have been skipped.",
+  };
 
   // Firefox runs content-script fetch() as the extension; content.fetch() sends
-  // it as the page itself, like Chrome and Safari do by default.
+  // it as the page itself, like Chrome and Safari do by default. (No AbortSignal
+  // is passed: Firefox can't hand one to the page. Time limits use withTimeout.)
   const pageFetch = (url, opts) =>
     globalThis.content && typeof globalThis.content.fetch === 'function' ? globalThis.content.fetch(url, opts) : fetch(url, opts);
 
@@ -877,20 +965,26 @@
     return m ? m.getAttribute('content') : '';
   }
 
+  const solicitationUrl = (id) =>
+    `${location.origin}/messaging/api/solicitations/${encodeURIComponent(id)}/productReviewAndSellerFeedback?marketplaceId=${marketplaceFor(id)}&isReturn=false`;
+  const SIGNED_OUT = 'Seller Central asked you to sign in again. Nothing more was sent.';
+
   // The same request Amazon's "Yes" button sends on its Request a Review page.
+  // Returns Amazon's answer, or { notProcessed } when Amazon clearly didn't take
+  // it, or { maybe } when it may have gone through but the reply was lost.
   async function postReviewRequest(id) {
-    const url = `${location.origin}/messaging/api/solicitations/${encodeURIComponent(id)}/productReviewAndSellerFeedback?marketplaceId=${marketplaceFor(id)}&isReturn=false`;
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
     const token = csrfToken();
     if (token) headers['anti-csrftoken-a2z'] = token;
     let resp;
     try {
-      resp = await pageFetch(url, { method: 'POST', credentials: 'include', headers, body: '{}', redirect: 'manual' });
+      resp = await withTimeout(pageFetch(solicitationUrl(id), { method: 'POST', credentials: 'include', headers, body: '{}', redirect: 'manual' }), POST_TIMEOUT_MS, null);
     } catch (e) {
-      return { notProcessed: true, why: 'no response' };
+      return { maybe: true, why: 'the connection dropped' };
     }
+    if (!resp) return { maybe: true, why: 'no answer in time' };
     if (resp.type === 'opaqueredirect' || resp.status === 0 || (resp.status >= 300 && resp.status < 400)) {
-      return { notProcessed: true, why: 'Amazon redirected the request' };
+      return { signedOut: true }; // redirected to sign-in before the request was handled
     }
     let data = null;
     try {
@@ -901,19 +995,24 @@
     if (data && data.isSuccess === true) return { status: 'sent', detail: 'Amazon accepted the review request.' };
     const reason = data && typeof data.ineligibleReason === 'string' ? data.ineligibleReason : '';
     if (/ALREADY|DUPLICATE/i.test(reason)) return { status: 'already', detail: 'Amazon already sent one for this order.' };
-    if (/WINDOW/i.test(reason)) return { status: 'notEligible', detail: "Outside Amazon's 5–30 day window" };
+    if (/WINDOW|TIME/i.test(reason)) return { status: 'notEligible', detail: "Outside Amazon's 5–30 day window" };
     if (reason) {
       // A reason we don't recognize is never guessed at: Amazon's own page is read for the real answer.
       const words = reason.replace(/^REVIEW_REQUEST_/, '').replace(/_/g, ' ').toLowerCase();
       return { notProcessed: true, why: `Amazon said "${words}"` };
     }
-    return { notProcessed: true, why: `Amazon answered ${resp.status}` };
+    if (resp.status >= 400 && resp.status < 500) return { notProcessed: true, why: `Amazon answered ${resp.status}` };
+    return { maybe: true, why: `Amazon answered ${resp.status}` }; // 5xx or an unreadable success: may have gone through
   }
 
   let fastFailures = 0;
 
   async function saveSettings() {
-    await api.storage.local.set({ settings });
+    try {
+      await api.storage.local.set({ settings });
+    } catch (e) {
+      /* extension reloaded */
+    }
   }
 
   async function rememberFrameBlocked() {
@@ -928,22 +1027,40 @@
     const t0 = Date.now();
     const res = await startJob(id, b, 'fast');
     if (!res || !res.ok) return notStarted(res);
+    const job = res.jobId;
 
     const rowRet = rowReturn(id);
     if (rowRet) {
-      await reportJob({ status: 'skippedReturn', detail: `Orders list shows "${rowRet.phrase}".`, returnKind: rowRet.returnKind });
+      await reportJob(job, { status: 'skippedReturn', detail: `Orders list shows "${rowRet.phrase}".`, returnKind: rowRet.returnKind });
       return waitForResult(id, t0);
     }
     // Returns were already ruled out by Manage Returns (runOne) and the row's own label.
 
     // Recorded before sending, so a request is never sent twice by accident.
-    if (!(await stageJob('confirmPage')) || !(await stageJob('clickedYes'))) {
-      await reportJob({ status: 'error', fatal: true, notProcessed: true, detail: 'Lost contact with the extension. Nothing was sent.' });
+    if (!(await stageJob(job, 'confirmPage')) || !(await stageJob(job, 'clickedYes'))) {
+      await reportJob(job, { status: 'error', fatal: true, notProcessed: true, detail: 'Lost contact with the extension. Nothing was sent.' });
       return waitForResult(id, t0);
     }
-    const r = await postReviewRequest(id);
+    let r = await postReviewRequest(id);
+    if (r.maybe) {
+      // The request may have gone through. Ask Amazon (read-only) before anything else.
+      const c = await checkOne(id);
+      r =
+        c.answer === 'already'
+          ? { status: 'sent', detail: 'Amazon confirmed the review request went through.' }
+          : c.answer === 'eligible'
+            ? { notProcessed: true, why: r.why } // it didn't: safe to try Amazon's page
+            : c.answer === 'notEligible'
+              ? { status: 'notEligible', detail: c.detail }
+              : { status: 'error', detail: `Amazon didn't answer clearly (${r.why}) after the request was sent. Check this order in Seller Central.` };
+    }
+    if (r.signedOut) {
+      await reportJob(job, { status: 'error', fatal: true, notProcessed: true, detail: SIGNED_OUT });
+      await waitForResult(id, t0);
+      return { status: 'error', fatal: true, unrecorded: true, detail: SIGNED_OUT };
+    }
     if (r.notProcessed) {
-      await reportJob({ status: 'error', notProcessed: true, detail: `Quick send didn't work (${r.why}).` });
+      await reportJob(job, { status: 'error', notProcessed: true, detail: `Quick send didn't work (${r.why}).` });
       await waitForResult(id, t0);
       if (++fastFailures >= 2 && settings.method === 'fast') {
         settings.method = 'page';
@@ -953,7 +1070,7 @@
       return { usePage: true };
     }
     fastFailures = 0;
-    await reportJob(r);
+    await reportJob(job, r);
     return waitForResult(id, t0);
   }
 
@@ -971,89 +1088,88 @@
     const res = await startJob(id, b, 'frame');
     if (!res || !res.ok) return notStarted(res);
     const frame = makeFrame();
-    const io = frameIo(frame, b.dataset.nudgeUrl);
+    const io = frameIo(frame, b.dataset.nudgeUrl, res.jobId);
     let outcome;
     try {
       const first = await io.navigate(b.dataset.nudgeUrl);
       outcome =
         first === 'blocked'
           ? 'blocked'
-          : await Promise.race([
-              globalThis.__nudgeDrive({ orderId: id, dryRun: false, stage: 'start' }, io),
-              sleep(RESULT_TIMEOUT_MS).then(() => 'timeout'),
-            ]);
+          : await withTimeout(globalThis.__nudgeDrive({ orderId: id, stage: 'start', marketplaceId: marketplaceFor(id) }, io), RESULT_TIMEOUT_MS, 'timeout');
     } catch (e) {
-      await reportJob({ status: 'error', detail: `Unexpected problem: ${e && e.message}` });
+      await io.report({ status: 'error', detail: `Unexpected problem: ${e && e.message}` });
     } finally {
+      io.kill(); // a slow page that answers later can't touch the next order
       frame.remove();
     }
     if (outcome === 'blocked') {
       await rememberFrameBlocked();
-      if (await send({ type: 'cancelJob', orderId: id })) return { useTab: true };
+      if (await send({ type: 'cancelJob', orderId: id, jobId: res.jobId })) return { useTab: true };
     }
     if (outcome === 'timeout') await send({ type: 'abortJob', orderId: id });
     return waitForResult(id, t0);
   }
 
-  // Picks the best working way automatically: quick send → Amazon's page
-  // (invisible) → Amazon's page in a background tab.
+  // One order: returns first, then Amazon's answer (read-only), then the send,
+  // by the best working way: quick send → Amazon's page (invisible) → Amazon's
+  // page in a background tab.
   async function runOne(id) {
     const b = buttons.get(id);
     if (!b) return { status: 'error', detail: 'Order is no longer on the page.', unrecorded: true };
     if (!b.dataset.nudgeDate && anchors.get(id)) b.dataset.nudgeDate = orderDateOf(anchors.get(id));
     working.add(id);
     closePop();
+    const done = async (rec) => {
+      working.delete(id);
+      await repaintAll();
+      return rec;
+    };
     await repaintAll();
     // Best effort: an unreadable list doesn't stop sending. A CAPTCHA or sign-in page does.
     const ret = await ensureReturns();
     if (ret.blocked) {
-      working.delete(id);
-      await repaintAll();
-      return { status: 'error', fatal: true, unrecorded: true, detail: `${ret.why} while reading Manage Returns, so ReviewNudge stopped. Nothing more was sent.` };
+      return done({ status: 'error', fatal: true, unrecorded: true, detail: `${ret.why} while reading Manage Returns, so ReviewNudge stopped. Nothing more was sent.` });
     }
     if (returnsList.ids.has(id)) {
-      working.delete(id);
-      await send({ type: 'markReturn', orderId: id, detail: 'This order has a return request on Manage Returns.', returnKind: 'return', orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
-      await repaintAll();
+      await send(returnMark(id, b));
       const { statuses = {} } = await get(['statuses']);
-      return statuses[id] || { status: 'skippedReturn', returnKind: 'return' };
+      return done(statuses[id] || { status: 'skippedReturn', returnKind: 'return' });
     }
     // Ask Amazon first (read-only, a fraction of a second). Only an order Amazon
-    // says can be requested is sent; the date estimate alone never decides.
+    // says can be requested is sent; the date estimate is used only if Amazon's
+    // answer can't be read at all.
     const { statuses: known = {} } = await get(['statuses']);
     const k = known[id];
-    if (!(k && k.status === 'eligible' && k.verifiedDay === localDay()) && checkOffDay !== localDay()) {
-      const answer = await lookUp(id);
+    if (!(k && k.status === 'eligible' && k.verifiedDay === localDay()) && !checksOff()) {
+      let answer = await lookUp(id);
+      if (answer === null) {
+        await sleep(1000);
+        answer = await lookUp(id); // one retry
+      }
+      if (answer === 'signedOut') return done({ status: 'error', fatal: true, unrecorded: true, detail: SIGNED_OUT });
       if (answer === 'already' || answer === 'notEligible') {
-        working.delete(id);
-        await repaintAll();
         const { statuses: now = {} } = await get(['statuses']);
-        return now[id] || { status: answer };
+        return done(now[id] || { status: answer });
       }
     }
     let rec = settings.method === 'fast' ? await runFast(id, b) : { usePage: true };
     if (rec.usePage) rec = settings.frameBlocked ? { useTab: true } : await runInFrame(id, b);
     if (rec.useTab) rec = await runInTab(id, b);
-    working.delete(id);
-    await repaintAll();
-    return rec;
+    return done(rec);
   }
 
   // ---------- confirming each order with Amazon ----------
-  // Saved results are a fallback, not the answer. Each order that could be
-  // requested is looked up once a day with a plain GET of the same Amazon
-  // address the Yes button posts to. A GET never sends anything. It's a small
-  // data request (no page load), so a whole page of orders is checked in seconds.
-  //
-  // Only a clear answer changes a label:
-  //   Amazon says a request already exists → "Already requested"
-  //   Amazon clearly says it can be sent  → stays "Request review" (confirmed)
-  // Anything else (an error, an unfamiliar reply) changes nothing, and after a
-  // few of those in a row checking is switched off for the day: the send itself
-  // gets Amazon's definite answer, in under a second per order.
+  // Saved results are a fallback, not the answer. Each order that isn't finished
+  // or past its window is looked up once a day with a plain GET of the same Amazon
+  // address the Yes button posts to: the same check Amazon's own Request a Review
+  // page makes. A GET never sends anything. It's a small data request (no page
+  // load), so a page of 100 orders takes under a minute. Anything that isn't a
+  // clear answer changes nothing.
   const CHECK_GAP_MS = [250, 550];
   const CHECK_TIMEOUT_MS = 8000;
-  const CHECK_GIVE_UP = 5; // unreadable replies in a row (errors, not JSON) before checking stops for today
+  const CHECK_GIVE_UP = 5; // unreadable replies in a row before lookups pause…
+  const CHECK_PAUSE_MS = 10 * 60 * 1000; // …for this long
+  const RELOOK_MS = 10 * 60 * 1000; // "Needs a look" is asked about again after this long
 
   function needsCheck(id) {
     const b = buttons.get(id);
@@ -1062,9 +1178,9 @@
     const rec = lastStatuses[id];
     if (rec && ['sent', 'already', 'skippedReturn', 'closed'].includes(rec.status)) return false;
     if (rec && rec.verifiedDay === today) return false;
-    // Past the window by the dates: Amazon won't take it, no need to ask.
-    if (viewOf(rec, b, today).group === 'past 30 days') return false;
-    return !rowReturn(id);
+    if (rec && rec.lookedAt && Date.now() - rec.lookedAt < RELOOK_MS) return false; // "Needs a look": asked recently
+    if (pastByDates(b, today)) return false; // Amazon won't take it; no need to ask
+    return !rowReturn(id) && !(returnsList && returnsList.ids.has(id));
   }
 
   // What Amazon's reply says. This is the same check Amazon's own Request a
@@ -1084,33 +1200,35 @@
     return null;
   }
 
+  // One read-only lookup: { answer, detail } · { signedOut } · { answer: null } (unreadable).
   async function checkOne(id) {
-    const url = `${location.origin}/messaging/api/solicitations/${encodeURIComponent(id)}/productReviewAndSellerFeedback?marketplaceId=${marketplaceFor(id)}&isReturn=false`;
-    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    const timer = setTimeout(() => ctl && ctl.abort(), CHECK_TIMEOUT_MS);
     try {
-      const resp = await pageFetch(url, { method: 'GET', credentials: 'include', headers: { Accept: 'application/json' }, redirect: 'manual', signal: ctl ? ctl.signal : undefined });
+      const resp = await withTimeout(pageFetch(solicitationUrl(id), { method: 'GET', credentials: 'include', headers: { Accept: 'application/json' }, redirect: 'manual' }), CHECK_TIMEOUT_MS, null);
+      if (!resp) return { answer: null };
       if (resp.type === 'opaqueredirect' || resp.status === 0 || (resp.status >= 300 && resp.status < 400)) return { signedOut: true };
       let data = null;
       try {
-        data = await resp.json();
+        data = await withTimeout(resp.json(), CHECK_TIMEOUT_MS, null);
       } catch (e) {
         /* not JSON */
       }
       return readCheck(data) || { answer: null };
     } catch (e) {
       return { answer: null };
-    } finally {
-      clearTimeout(timer);
     }
   }
 
   let checkRun = null;
   let checkStop = false;
   let checkKick = null;
-  let checkOffDay = ''; // checking gave nothing useful today: don't keep asking
-
+  let checkPausedUntil = 0; // lookups kept failing: pause them for a while
   let unclearStreak = 0; // unreadable replies in a row, across all lookups
+  const checksOff = () => Date.now() < checkPausedUntil;
+  // Something the seller starts gives lookups a fresh chance.
+  const resumeChecks = () => {
+    checkPausedUntil = 0;
+    unclearStreak = 0;
+  };
 
   // One lookup, recorded. Returns Amazon's answer ('already' | 'eligible' | 'notEligible'),
   // 'signedOut', or null when the reply couldn't be read.
@@ -1119,7 +1237,10 @@
     const r = await checkOne(id);
     if (r.signedOut) return 'signedOut';
     if (!r.answer) {
-      if (++unclearStreak >= CHECK_GIVE_UP) checkOffDay = localDay();
+      if (++unclearStreak >= CHECK_GIVE_UP) {
+        checkPausedUntil = Date.now() + CHECK_PAUSE_MS;
+        unclearStreak = 0;
+      }
       return null;
     }
     unclearStreak = 0;
@@ -1127,18 +1248,24 @@
     return r.answer;
   }
 
-  // Looks up the given orders one by one. In a run (inRun) it reports progress
-  // and honours Stop; otherwise it yields to any run that starts.
-  async function runChecks(ids, { inRun = false, onProgress = null } = {}) {
+  // Looks up the given orders one by one. In a run (inRun) it reports progress,
+  // counts what it finds and honours Stop; otherwise it yields to anything the
+  // seller starts. Returns { signedOut }.
+  async function runChecks(ids, { inRun = false, onProgress = null, onAnswer = null } = {}) {
     let sinceRepaint = 0;
+    let signedOut = false;
     for (let i = 0; i < ids.length; i++) {
-      if (checkOffDay === localDay()) break;
+      if (checksOff()) break;
       if (inRun ? stopRequested : checkStop || busy) break;
       const id = ids[i];
       if (!needsCheck(id)) continue;
       if (onProgress) onProgress(i + 1, ids.length);
       const answer = await lookUp(id);
-      if (answer === 'signedOut') break; // Seller Central wants a sign-in; the orders page will show it
+      if (answer === 'signedOut') {
+        signedOut = true; // Seller Central wants a sign-in
+        break;
+      }
+      if (answer && onAnswer) onAnswer(id, answer);
       if (answer && ++sinceRepaint >= 5) {
         sinceRepaint = 0;
         await repaintAll(); // labels update as answers come in
@@ -1146,6 +1273,7 @@
       if (i < ids.length - 1) await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
     }
     await repaintAll();
+    return { signedOut };
   }
 
   // Orders that would be sent first, then the ones not expected to be open yet.
@@ -1154,32 +1282,39 @@
     return ids.filter(needsCheck).sort((x, y) => Number(!viewOf(lastStatuses[x], buttons.get(x), today).batch) - Number(!viewOf(lastStatuses[y], buttons.get(y), today).batch));
   }
 
+  // In the background when the page (or a new page of orders) loads: returns
+  // first, so a returned order never shows "Request review", then lookups.
   async function checkAll() {
-    if (busy || checkRun || checkOffDay === localDay()) return;
-    const ids = checkOrder(pageIds());
-    if (!ids.length) return;
+    if (busy || checkRun || !alive()) return;
+    const today = localDay();
+    const ids = pageIds();
+    const sendable = ids.some((id) => viewOf(lastStatuses[id], buttons.get(id), today).batch);
+    if (!sendable && !checkOrder(ids).length) return;
     checkStop = false;
     const run = (async () => {
-      // Returns first, so a returned order never shows "Request review" (best effort).
       const ret = await ensureReturns();
       if (ret.blocked) {
         attention = true;
         renderLauncher();
         return;
       }
+      if (checkStop || busy || checksOff()) return;
       await runChecks(checkOrder(pageIds()));
-    })().finally(() => {
-      if (checkRun === run) checkRun = null;
-    });
+    })()
+      .catch(() => {})
+      .finally(() => {
+        if (checkRun === run) checkRun = null;
+      });
     checkRun = run;
-    await run.catch(() => {});
+    await run;
   }
 
-  // Waits for at most the one lookup in flight (a fraction of a second).
+  // Stops background checking. Waits for the step in flight: one lookup, or a
+  // returns read that's under way (a run needs that list anyway).
   async function stopChecks() {
     clearTimeout(checkKick);
     checkStop = true;
-    if (checkRun) await checkRun.catch(() => {});
+    if (checkRun) await checkRun;
   }
 
   function kickChecks(ms = 1200) {
@@ -1197,13 +1332,14 @@
     openPop(id);
   }
 
-  // Green pill on success; red pill + popup + notice on trouble.
+  // Green pill on success; red pill + popup + notice on trouble. In a run
+  // (single = false) the run's summary is the notice.
   function announce(id, rec, single) {
     if (rec.unrecorded) {
       attention = true;
       renderLauncher();
       setStatus(rec.detail);
-      notice(rec.detail, 'err');
+      if (single) notice(rec.detail, 'err');
       return;
     }
     if (rec.status === 'sent') {
@@ -1212,31 +1348,40 @@
       attention = true;
       renderLauncher();
       showOrder(id);
-      notice(`Order ${id} didn't go through. Tap to see why.`, 'err', () => showOrder(id));
+      if (single) notice(`Order ${id} didn't go through. Tap to see why.`, 'err', () => showOrder(id));
     } else if (single) {
       showOrder(id); // not eligible / returned / already requested: say why
     }
+  }
+
+  function staleScript() {
+    notice('ReviewNudge was updated or reloaded. Reload this page to use it.', 'err');
   }
 
   async function runFromUi(id) {
     if (busy) return notice('Busy – wait for the current order to finish.', 'info');
     const b = buttons.get(id);
     if (!b) return;
-    await stopChecks(); // at most one quick lookup in flight
-    if (busy) return;
-    const { statuses = {} } = await get(['statuses']);
-    lastStatuses = statuses;
-    if (viewOf(statuses[id], b, localDay()).final) return openPop(id);
-    busy = true;
+    if (!alive()) return staleScript();
+    busy = true; // claimed right away, so a second tap can't start another order
     renderLauncher();
-    let rec;
+    let rec = null;
     try {
+      await stopChecks();
+      resumeChecks();
+      const { statuses = {} } = await get(['statuses']);
+      lastStatuses = statuses;
+      if (viewOf(statuses[id], b, localDay()).final) {
+        openPop(id);
+        return;
+      }
       rec = await runOne(id);
     } finally {
       busy = false;
       renderLauncher();
       kickChecks(3000);
     }
+    if (!rec) return;
     setStatus(`Order ${id}: ${viewOf(rec.checkedDay ? rec : { ...rec, checkedDay: localDay() }, b, localDay()).label}`);
     announce(id, rec, true);
   }
@@ -1368,22 +1513,27 @@
 
   async function runBatch() {
     if (busy) return;
+    if (!alive()) return staleScript();
     busy = true;
+    inBatch = true;
     stopRequested = false;
     attention = false;
     renderLauncher(); // spinner shows the moment the button is clicked
     closePop();
-    listSkips = 0;
-    returnsUnread = false;
-    if (returnsList && returnsList.failed) returnsList = null; // try again on each new run
+    returnsUnread = '';
+    if (returnsList && (returnsList.failed || returnsList.fbaFailed)) returnsList = null; // try again on each new run
     const tally = {};
+    const skipped = new Set(); // orders with a return or refund that would otherwise be sent
     const upcoming = new Map();
     let errorsInARow = 0;
     let stopReason = '';
+    let problemId = null; // the order to show when the summary is tapped
     let page = 1;
     let pagesNote = '';
+    const count = (group) => (tally[group] = (tally[group] || 0) + 1);
     try {
-      await stopChecks(); // at most one quick lookup in flight
+      await stopChecks(); // lets a lookup or returns read in flight finish
+      resumeChecks();
       for (;;) {
         await scan();
         lastStatuses = (await get(['statuses'])).statuses || {};
@@ -1391,17 +1541,22 @@
         // plan comes from Amazon's answers, not from delivery-date estimates.
         const toCheck = checkOrder(pageIds());
         if (toCheck.length) {
-          await runChecks(toCheck, {
+          const checked = await runChecks(toCheck, {
             inRun: true,
             onProgress: (i, n) => {
               progress = { check: true, i, n, page };
               renderLauncher();
             },
+            onAnswer: (id, answer) => {
+              if (answer === 'already') count('already requested');
+            },
           });
-          if (stopRequested) {
-            stopReason = 'Stopped.';
+          if (checked.signedOut) {
+            stopReason = `Stopped. ${SIGNED_OUT}`;
+            attention = true;
             break;
           }
+          if (stopRequested) break;
         }
         const { statuses = {} } = await get(['statuses']);
         lastStatuses = statuses;
@@ -1411,20 +1566,22 @@
           const id = plan[i];
           const { statuses: now = {} } = await get(['statuses']);
           const b = buttons.get(id);
-          if (!b || viewOf(now[id], b, localDay()).final) continue; // handled meanwhile
+          if (!b || !viewOf(now[id], b, localDay()).batch) continue; // handled meanwhile
 
           progress = { i: i + 1, n: plan.length, page };
           renderLauncher();
           const rec = await runOne(id);
-          const group = viewOf(rec.checkedDay ? rec : { ...rec, checkedDay: localDay() }, b, localDay()).group;
-          if (!rec.unrecorded) tally[group] = (tally[group] || 0) + 1;
+          if (rec.status === 'skippedReturn') skipped.add(id);
+          else if (!rec.unrecorded) count(viewOf(rec.checkedDay ? rec : { ...rec, checkedDay: localDay() }, b, localDay()).group);
 
           if (rec.fatal) {
             announce(id, rec, false);
+            if (!rec.unrecorded) problemId = id;
             stopReason = rec.unrecorded ? `Stopped. ${rec.detail}` : `Stopped at order ${id}.`;
             break;
           }
           if (rec.status === 'error') {
+            problemId = id;
             if (++errorsInARow >= 2) {
               announce(id, rec, false);
               stopReason = 'Stopped after 2 errors in a row.';
@@ -1437,19 +1594,19 @@
         }
         const { statuses: after = {} } = await get(['statuses']);
         lastStatuses = after;
+        const today = localDay();
+        for (const id of pageIds()) {
+          if (after[id] && after[id].status === 'skippedReturn' && !pastByDates(buttons.get(id), today)) skipped.add(id);
+        }
         noteUpcoming(upcoming);
-        if (stopRequested && !stopReason) stopReason = 'Stopped.';
-        if (stopReason) break;
+        if (stopReason || stopRequested) break;
 
         // Next page, while this page still had orders inside the 30-day window.
         if (pageReachedOldOrders() || page >= MAX_PAGES || !findNextPage()) break;
         progress = { i: 0, n: 0, page: page + 1 };
         renderLauncher();
         await sleep(rand(GAP_MIN_MS, GAP_MAX_MS));
-        if (stopRequested) {
-          stopReason = 'Stopped.';
-          break;
-        }
+        if (stopRequested) break;
         const moved = await goToNextPage();
         if (!moved) {
           stopReason = "Stopped: the next page of orders didn't load.";
@@ -1459,15 +1616,20 @@
         pagesNote = ` across ${plural(page, 'page')}`;
       }
     } finally {
+      const stopped = stopRequested && !stopReason;
       busy = false;
+      inBatch = false;
       progress = null;
       stopRequested = false;
-      await repaintAll();
-      if (listSkips) tally['returns/refunds skipped'] = (tally['returns/refunds skipped'] || 0) + listSkips;
+      await repaintAll().catch(() => {});
+      if (skipped.size) tally['returns/refunds skipped'] = skipped.size;
       const done = summary(tally);
-      const text = `${stopReason ? `${stopReason} ` : done ? 'Done. ' : ''}${done ? `${done}${pagesNote}.` : 'Nothing to send right now.'} ${comingUp(upcoming)} ${returnsUnread ? RETURNS_NOTE : ''}`.replace(/ {2,}/g, ' ').trim(); // plain spaces only: dates keep their no-break spaces
+      const head = stopReason ? `${stopReason} ` : stopped ? 'Stopped. ' : done ? 'Done. ' : '';
+      const text = `${head}${done ? `${done}${pagesNote}.` : stopReason || stopped ? '' : 'Nothing to send right now.'} ${comingUp(upcoming)} ${returnsUnread ? RETURNS_NOTES[returnsUnread] : ''}`
+        .replace(/ {2,}/g, ' ') // plain spaces only: dates keep their no-break spaces
+        .trim();
       setStatus(text);
-      if (!stopReason || stopReason === 'Stopped.') notice(text, tally.sent ? 'ok' : 'info', null, true);
+      notice(text, stopReason ? 'err' : tally.sent ? 'ok' : 'info', problemId ? () => showOrder(problemId) : null, true);
       renderLauncher();
       kickChecks(3000);
     }
@@ -1475,10 +1637,13 @@
 
 
   // ---------- diagnostic (Option-click the button) ----------
-  // Read-only. For every order on the page, shows the label next to Amazon's own
-  // answer (the same lookup the labels use) and flags any disagreement.
-  // Nothing is sent or clicked, and nothing is saved.
+  // Read-only toward Amazon: sends no review request and changes nothing in
+  // Seller Central. Reads both returns lists (the same way a run does) and, for
+  // every order on the page, shows the label next to Amazon's own answer (the
+  // same lookup the labels use), flagging any disagreement. Fresh answers
+  // refresh ReviewNudge's own labels; the text itself is kept nowhere.
   const DIAG_MAX = 100;
+  let diagAbort = false;
   const clip = (t, n = 300) => String(t || '').replace(/\s+/g, ' ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email]').slice(0, n);
 
   function diagPanel() {
@@ -1490,7 +1655,10 @@
       Object.assign(p.style, { position: 'fixed', left: '16px', right: '16px', top: '16px', bottom: '16px', zIndex: '2147483001', background: '#fff', border: '2px solid #232f3e', borderRadius: '8px', padding: '12px', font: '12px/1.4 Menlo, monospace', color: '#0f1111', display: 'flex', flexDirection: 'column', gap: '8px', boxShadow: '0 8px 30px rgba(0,0,0,.3)' });
       p.innerHTML = '<div style="display:flex;justify-content:space-between;font:600 14px Arial"><span>ReviewNudge diagnostic · read-only, nothing is sent</span><span><button type="button" data-copy style="font:14px Arial;margin-right:8px">Copy</button><button type="button" data-close style="font:14px Arial">Close</button></span></div><textarea readonly style="flex:1;width:100%;font:12px/1.4 Menlo,monospace;white-space:pre-wrap"></textarea>';
       const ta = p.querySelector('textarea');
-      p.querySelector('[data-close]').addEventListener('click', () => p.remove());
+      p.querySelector('[data-close]').addEventListener('click', () => {
+        diagAbort = true; // closing the panel stops the diagnostic
+        p.remove();
+      });
       p.querySelector('[data-copy]').addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         let ok = false;
@@ -1526,7 +1694,10 @@
   }
 
   async function diagnose() {
+    if (busy) return;
+    if (!alive()) return staleScript();
     busy = true;
+    diagAbort = false;
     renderLauncher();
     const out = diagPanel();
     const log = (line) => {
@@ -1560,10 +1731,11 @@
       checkingReturns = false;
       renderLauncher();
     }
-    const sf = new Set(ret.ok ? ret.sfIds || [] : []);
+    if (diagAbort) return;
+    const sf = new Set(ret.ok ? ret.sfIds || [] : ret.ids || []);
     const fbaIds = new Set(ret.ok && ret.fbaInfo && ret.fbaInfo.ok ? ret.fbaInfo.ids : []);
     if (ret.blocked) log(`Manage Returns: stopped, ${ret.why}. A run would stop here too.`);
-    else if (!ret.ok) log(`Manage Returns: couldn't be read (${ret.why}). A run would still skip returns shown on the orders page.`);
+    else if (!ret.ok) log(`Manage Returns: couldn't be read in full (${ret.why})${sf.size ? `; ${sf.size} returns were read` : ''}. A run still skips those and returns shown on the orders page, and says so in its summary.`);
     else {
       log(`Manage Returns (seller-fulfilled): read via ${ret.via} · ${sf.size} order${sf.size === 1 ? '' : 's'} with a return (last 90 days, any status)`);
       const f = ret.fbaInfo || {};
@@ -1572,7 +1744,7 @@
           ? `Manage FBA returns: read · ${fbaIds.size} order${fbaIds.size === 1 ? '' : 's'} · filtered by ${f.filter} · range: ${f.range}`
           : f.missing
             ? 'Manage FBA returns: no FBA returns page on this account (fine if you don\'t use FBA)'
-            : `Manage FBA returns: couldn't be read (${f.why || 'unknown'})${f.snippet ? `\n  The page shows: ${clip(f.snippet, 300)}` : ''}`
+            : `Manage FBA returns: couldn't be read (${f.why || 'unknown'}). A run says so in its summary.${f.snippet ? `\n  The page shows: ${clip(f.snippet, 300)}` : ''}`
       );
     }
     // The order list is taken now, after the page has settled (it may still have been loading).
@@ -1587,10 +1759,13 @@
     let mismatch = 0;
     let unread = 0;
     for (const id of ids) {
+      if (diagAbort) return;
       const b = buttons.get(id);
       const v = viewOf(statuses[id], b, today);
       const rec = statuses[id];
       const r = await checkOne(id);
+      // Fresh answers also refresh ReviewNudge's own labels (never a finished order's).
+      if (r.answer) await send({ type: 'checked', orderId: id, answer: r.answer, detail: r.detail, orderDate: b.dataset.nudgeDate || null, closesOn: closesOn(b) || null });
       const amazon = r.signedOut ? 'sign-in needed' : r.answer === 'already' ? 'already requested' : r.answer === 'eligible' ? 'can be requested' : r.answer === 'notEligible' ? `not now (${r.detail})` : 'no readable answer';
       // Does the label agree with Amazon?
       const row = rowReturn(id);
@@ -1608,8 +1783,13 @@
       if (r.signedOut) break;
       await sleep(rand(CHECK_GAP_MS[0], CHECK_GAP_MS[1]));
     }
+    await repaintAll();
     log(`\nLabels that agree with Amazon: ${match} · disagree (⚠): ${mismatch} · no answer: ${unread}`);
-    log(mismatch ? 'Labels marked ⚠ will be corrected on the next page load.' : 'All labels agree with Amazon.');
+    log(
+      mismatch
+        ? "⚠ = the label disagreed with Amazon. Unfinished orders' labels were just updated from Amazon's answers; a ⚠ on Sent, Already requested or Returned is worth checking in Seller Central."
+        : 'All labels agree with Amazon.'
+    );
     log('Use Copy (top right) to share this text. It is not saved anywhere.');
   }
 
@@ -1627,7 +1807,23 @@
       v: 5,
     };
     lastStatuses = stored.statuses || {};
+    // A job this tab was running before a reload can't finish anymore: let the
+    // background close it (and flag the order if its request had already gone out).
+    await send({ type: 'pageLoaded' });
     await scan();
+
+    // A new day: yesterday's answers are only a fallback now, and the quick send gets another chance.
+    let day = localDay();
+    setInterval(() => {
+      if (localDay() === day) return;
+      day = localDay();
+      if (settings.switchedDay !== day) settings = { method: 'fast', frameBlocked: false, switchedDay: '', v: 5 };
+      fastFailures = 0;
+      checkPausedUntil = 0;
+      unclearStreak = 0;
+      repaintAll().catch(() => {});
+      kickChecks();
+    }, 60000);
 
     let pending = null;
     const schedule = () => {

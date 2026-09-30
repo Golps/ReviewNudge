@@ -15,14 +15,18 @@ const CLOSE_AFTER_ORDER_AGE_DAYS = 45; // Amazon says not eligible and the order
 const FORGET_AFTER_CLOSE_DAYS = 1; // forget an order this many days after its 30-day window ends
 const FORGET_AFTER_ORDER_DAYS = 45; // …or, with no delivery estimate, this long after the order date
 const FINAL = new Set(['sent', 'already', 'skippedReturn', 'closed', 'unknown']);
-const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'eligible', 'skippedReturn', 'error', 'unknown']);
+const REPORTABLE = new Set(['sent', 'already', 'notEligible', 'skippedReturn', 'error', 'unknown']);
+const ANSWERED = new Set(['sent', 'already', 'notEligible', 'eligible']); // Amazon itself gave this answer
 const STAGES = ['start', 'confirmPage', 'clickedYes'];
 const PAGE_OWNED = new Set(['fast', 'frame']); // jobs driven by the orders page itself
+const ORDER_ID = /^\d{3}-\d{7}-\d{7}$/;
+const MARKETPLACE_ID = /^[A-Z0-9]{8,16}$/;
 
 const pad = (n) => String(n).padStart(2, '0');
 const localDay = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
 const daysBetween = (a, b) => Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000);
+const newJobId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 async function getStored(keys) {
   return (await api.storage.local.get(keys)) || {};
@@ -31,6 +35,7 @@ async function getJob() {
   return (await getStored('currentJob')).currentJob || null;
 }
 const saveJob = (job) => api.storage.local.set({ currentJob: job });
+const isLive = (job) => !!job && Date.now() - job.startedAt < STALE_JOB_MS;
 
 // Handle one event at a time so read-modify-write on storage never interleaves.
 let chain = Promise.resolve();
@@ -60,7 +65,7 @@ function prune(statuses, keepId) {
   return statuses;
 }
 
-function buildRecord(prev, orderId, result, orderDate, dryRun, closesOn) {
+function buildRecord(prev, result, orderDate, closesOn) {
   const day = localDay();
   const rec = {
     ...prev,
@@ -69,15 +74,14 @@ function buildRecord(prev, orderId, result, orderDate, dryRun, closesOn) {
     fatal: !!result.fatal,
     checkedAt: Date.now(),
     checkedDay: day,
-    mode: dryRun ? 'dry' : 'live',
   };
+  delete rec.lookedAt;
   if (orderDate) rec.orderDate = orderDate;
   if (isDay(closesOn)) rec.closesOn = closesOn;
-  // Amazon itself answered today (not a load failure): today's label can be trusted.
-  if (result.status !== 'error') rec.verifiedDay = day;
-  delete rec.checkFailedDay;
-  delete rec.checkNote;
-  delete rec.checkFatal;
+  // Amazon itself answered today: today's label can be trusted. "Needs a look"
+  // is the opposite (no answer), so it stays open to lookups.
+  if (ANSWERED.has(result.status)) rec.verifiedDay = day;
+  else if (result.status === 'unknown') delete rec.verifiedDay;
   if (result.status === 'skippedReturn') rec.returnKind = result.returnKind === 'refund' ? 'refund' : 'return';
   if (result.status === 'notEligible') {
     rec.firstIneligibleDay = prev.firstIneligibleDay || day;
@@ -95,39 +99,14 @@ function buildRecord(prev, orderId, result, orderDate, dryRun, closesOn) {
 }
 
 async function recordResult(job, result) {
-  const { statuses = {}, today } = await getStored(['statuses', 'today']);
-  const day = localDay();
+  const { statuses = {} } = await getStored(['statuses']);
   const prev = statuses[job.orderId] || {};
-  let rec;
-  let changed = true;
-  // "Needs a look" means we pressed Yes and never saw Amazon's answer. A later
-  // check-only read settles it: Amazon says "already requested" (so it went
-  // through), or offers Yes again (so it never did).
-  const settlesUnknown = job.dryRun && prev.status === 'unknown' && (result.status === 'already' || result.status === 'eligible');
-  if (job.dryRun && result.status === 'error') {
-    // A check that couldn't load says nothing about the order: keep what we knew.
-    rec = { ...prev, checkedAt: Date.now(), checkFailedDay: day, checkNote: result.detail, checkFatal: !!result.fatal };
-    if (job.orderDate) rec.orderDate = job.orderDate;
-    if (isDay(job.closesOn)) rec.closesOn = job.closesOn;
-    changed = false;
-  } else if (FINAL.has(prev.status) && !settlesUnknown) {
-    // Never change a finished order. Just note that it was looked at.
-    rec = { ...prev, checkedAt: Date.now(), lastNote: result.detail };
-    changed = false;
-  } else {
-    rec = buildRecord(prev, job.orderId, result, job.orderDate, job.dryRun, job.closesOn);
-  }
-  let counter = today && today.day === day ? today : { day, count: 0 };
-  if (changed && !job.dryRun && (rec.status === 'sent' || rec.status === 'unknown')) {
-    counter = { day, count: counter.count + 1 };
-  }
-  statuses[job.orderId] = rec;
-  await api.storage.local.set({ statuses: prune(statuses, job.orderId), today: counter });
+  // Never change a finished order. The new timestamp still tells the orders page the job ended.
+  statuses[job.orderId] = FINAL.has(prev.status) ? { ...prev, checkedAt: Date.now() } : buildRecord(prev, result, job.orderDate, job.closesOn);
+  await api.storage.local.set({ statuses: prune(statuses, job.orderId) });
 }
 
-async function finishJob(job, result) {
-  await recordResult(job, result);
-  await api.storage.local.remove('currentJob');
+async function closeTabs(job) {
   for (const id of job.tabIds || []) {
     try {
       await api.tabs.remove(id);
@@ -135,29 +114,36 @@ async function finishJob(job, result) {
       /* already closed */
     }
   }
-  if (job.showTab && job.returnTabId != null && api.tabs.update) {
-    try {
-      await api.tabs.update(job.returnTabId, { active: true }); // back to the orders page
-    } catch (e) {
-      /* orders tab is gone */
-    }
+}
+
+async function finishJob(job, result) {
+  await recordResult(job, result);
+  await api.storage.local.remove('currentJob');
+  await closeTabs(job);
+}
+
+// A job whose page went away (reloaded, closed, or it never finished). Before
+// the request went out nothing happened, so nothing is recorded. After it went
+// out, the order becomes "Needs a look" until a lookup shows Amazon's answer.
+async function endAbandoned(job, why) {
+  if (job.stage === 'clickedYes') {
+    await finishJob(job, { status: 'unknown', fatal: true, detail: `${why} after the request was sent. Check this order in Seller Central.` });
+  } else {
+    await api.storage.local.remove('currentJob');
+    await closeTabs(job);
   }
 }
 
 function failureFor(job, why) {
   if (job.stage === 'clickedYes') {
-    return {
-      status: 'unknown',
-      fatal: true,
-      detail: `${why} after the request was sent. Check this order in Seller Central.`,
-    };
+    return { status: 'unknown', fatal: true, detail: `${why} after the request was sent. Check this order in Seller Central.` };
   }
   return { status: 'error', fatal: true, detail: `${why}. Nothing was sent.` };
 }
 
 async function runJob(req, sender) {
-  const { orderId, url, dryRun, orderDate, closesOn, showTab, mode } = req || {};
-  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '')) return { ok: false, reason: 'Invalid order ID.' };
+  const { orderId, url, orderDate, closesOn, mode, marketplaceId } = req || {};
+  if (!ORDER_ID.test(orderId || '')) return { ok: false, reason: 'Invalid order ID.' };
   let u;
   try {
     u = new URL(url);
@@ -170,20 +156,23 @@ async function runJob(req, sender) {
 
   const existing = await getJob();
   if (existing) {
-    if (Date.now() - existing.startedAt < STALE_JOB_MS) return { ok: false, reason: 'busy' };
-    await finishJob(existing, failureFor(existing, 'It never finished'));
+    if (isLive(existing)) return { ok: false, reason: 'busy' };
+    await endAbandoned(existing, 'It never finished');
   }
+  // A finished order is never started again, whatever the orders page thinks.
+  const { statuses = {} } = await getStored(['statuses']);
+  const prev = statuses[orderId];
+  if (prev && FINAL.has(prev.status)) return { ok: false, reason: 'final', record: prev };
 
   const job = {
+    id: newJobId(),
     orderId,
     url: u.href,
     mode: PAGE_OWNED.has(mode) ? mode : 'tab',
     ownerTabId: sender && sender.tab ? sender.tab.id : null,
-    dryRun: dryRun !== false, // anything but an explicit false is a check-only run
     orderDate: isDay(orderDate) ? orderDate : null,
     closesOn: isDay(closesOn) ? closesOn : null,
-    showTab: !!showTab,
-    returnTabId: sender && sender.tab ? sender.tab.id : null,
+    marketplaceId: MARKETPLACE_ID.test(marketplaceId || '') ? marketplaceId : null,
     stage: 'start',
     note: '',
     startedAt: Date.now(),
@@ -196,11 +185,11 @@ async function runJob(req, sender) {
       await api.storage.local.remove('currentJob');
       return { ok: false, reason: 'No orders tab.' };
     }
-    return { ok: true }; // the orders page does the work itself
+    return { ok: true, jobId: job.id }; // the orders page does the work itself
   }
   let tab;
   try {
-    tab = await api.tabs.create({ url: u.href, active: !!showTab });
+    tab = await api.tabs.create({ url: u.href, active: false });
   } catch (e) {
     await api.storage.local.remove('currentJob');
     return { ok: false, reason: `Couldn't open the order page (${e && e.message}).` };
@@ -208,13 +197,14 @@ async function runJob(req, sender) {
   job.tabIds = [tab.id];
   job.activeTabId = tab.id;
   await saveJob(job);
-  return { ok: true };
+  return { ok: true, jobId: job.id };
 }
 
-// Who may move a job forward: the job's tab (tab mode) or the orders page's
-// top frame (fast/frame modes).
-function isActor(job, sender) {
-  if (!job || !sender || !sender.tab) return false;
+// Who may move a job forward: the job's tab (tab mode) or the orders page's top
+// frame (fast/frame modes), and only for this job: a late message from an
+// earlier order's job never touches the current one.
+function isActor(job, sender, jobId) {
+  if (!job || !sender || !sender.tab || !jobId || job.id !== jobId) return false;
   if (PAGE_OWNED.has(job.mode)) return sender.tab.id === job.ownerTabId && !sender.frameId;
   return sender.tab.id === job.activeTabId;
 }
@@ -222,39 +212,36 @@ function isActor(job, sender) {
 async function hello(sender) {
   const job = await getJob();
   const tabId = sender && sender.tab ? sender.tab.id : undefined;
-  if (!job || PAGE_OWNED.has(job.mode) || tabId === undefined || job.activeTabId == null) return null;
+  if (!job || job.mode !== 'tab' || tabId === undefined || job.activeTabId == null) return null;
 
   if (!job.tabIds.includes(tabId)) {
     // Amazon opened its review page in a new tab: take that tab over.
     const url = (sender && sender.url) || (sender.tab && sender.tab.url) || '';
-    const adoptable =
-      job.stage === 'confirmPage' &&
-      url.includes(job.orderId) &&
-      /review|solicit|messaging/i.test(url) &&
-      Date.now() - job.startedAt < STALE_JOB_MS;
+    const adoptable = job.stage === 'confirmPage' && url.includes(job.orderId) && /review|solicit|messaging/i.test(url) && isLive(job);
     if (!adoptable) return null;
     job.tabIds.push(tabId);
     job.activeTabId = tabId;
     await saveJob(job);
   }
   if (tabId !== job.activeTabId) return null; // an older tab of this job stands down
-  return { orderId: job.orderId, dryRun: job.dryRun, stage: job.stage, note: job.note };
+  return { jobId: job.id, orderId: job.orderId, stage: job.stage, note: job.note, marketplaceId: job.marketplaceId };
 }
 
-async function setStage(sender, stage, note) {
+async function setStage(sender, msg) {
+  const { stage, note, jobId } = msg || {};
   const job = await getJob();
-  if (!isActor(job, sender)) return false;
+  if (!isActor(job, sender, jobId)) return false;
   if (STAGES.indexOf(stage) !== STAGES.indexOf(job.stage) + 1) return false;
-  if (stage === 'clickedYes' && job.dryRun) return false; // a check-only run can never send
   job.stage = stage;
   if (note) job.note = String(note).slice(0, 200);
   await saveJob(job);
   return true;
 }
 
-async function report(sender, result) {
+async function report(sender, msg) {
+  const { result, jobId } = msg || {};
   const job = await getJob();
-  if (!isActor(job, sender)) return false;
+  if (!isActor(job, sender, jobId)) return false;
   const r = {
     status: REPORTABLE.has(result && result.status) ? result.status : 'error',
     detail: String((result && result.detail) || '').slice(0, 300),
@@ -263,8 +250,7 @@ async function report(sender, result) {
   };
   // After sending, anything short of a clear answer means "we don't know" –
   // unless Amazon clearly rejected the request before processing it.
-  const notProcessed = !!(result && result.notProcessed);
-  if (job.stage === 'clickedYes' && ((r.status === 'error' && !notProcessed) || r.status === 'eligible')) {
+  if (job.stage === 'clickedYes' && r.status === 'error' && !(result && result.notProcessed)) {
     r.status = 'unknown';
     r.fatal = true;
   }
@@ -273,37 +259,54 @@ async function report(sender, result) {
   return true;
 }
 
-// A quick read-only lookup from the orders page (nothing was sent).
-// Only a clear answer is recorded; a finished order is never changed, except that
-// "Needs a look" is settled by it.
+// A read-only lookup from the orders page (nothing was sent). A finished order
+// is never changed, with one exception: "Needs a look" (Yes was pressed, the
+// answer was never seen) is settled once Amazon says a request exists.
 async function recordCheck(msg) {
   const { orderId, answer, orderDate, closesOn } = msg || {};
-  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '') || !['already', 'eligible', 'notEligible'].includes(answer)) return false;
+  if (!ORDER_ID.test(orderId || '') || !['already', 'eligible', 'notEligible'].includes(answer)) return false;
   const job = await getJob();
-  if (job && job.orderId === orderId && Date.now() - job.startedAt < STALE_JOB_MS) return false; // being sent now; its own answer wins
+  if (job && job.orderId === orderId && isLive(job)) return false; // being sent now; its own answer wins
   const { statuses = {} } = await getStored(['statuses']);
   const prev = statuses[orderId] || {};
-  if (FINAL.has(prev.status) && prev.status !== 'unknown') return false;
-  const result =
-    answer === 'already'
-      ? { status: 'already', detail: 'Amazon says a review was already requested for this order.' }
-      : answer === 'eligible'
-        ? { status: 'eligible', detail: 'Amazon accepts a review request for this order.' }
-        : { status: 'notEligible', detail: String(msg.detail || "Amazon doesn't accept a request for this order right now.").slice(0, 200) };
-  if (answer !== 'already' && prev.status === 'unknown') return false; // only "already" settles "Needs a look" safely
-  statuses[orderId] = buildRecord(prev, orderId, result, isDay(orderDate) ? orderDate : null, false, closesOn);
+  const day = localDay();
+  let result;
+  if (prev.status === 'unknown') {
+    if (answer === 'already') {
+      result = { status: 'sent', detail: 'Amazon confirms the review request went through.' };
+    } else if (answer === 'eligible' && prev.checkedDay && prev.checkedDay < day) {
+      result = { status: 'eligible', detail: "Amazon still accepts a request, so the earlier one didn't go through." };
+    } else {
+      // Same day: Amazon may still be processing it. Leave it for a person and ask again later.
+      statuses[orderId] = { ...prev, lookedAt: Date.now() };
+      await api.storage.local.set({ statuses });
+      return true;
+    }
+  } else if (FINAL.has(prev.status)) {
+    return false;
+  } else {
+    result =
+      answer === 'already'
+        ? { status: 'already', detail: 'Amazon says a review was already requested for this order.' }
+        : answer === 'eligible'
+          ? { status: 'eligible', detail: 'Amazon accepts a review request for this order.' }
+          : { status: 'notEligible', detail: String(msg.detail || "Amazon doesn't accept a request for this order right now.").slice(0, 200) };
+  }
+  statuses[orderId] = buildRecord(prev, result, isDay(orderDate) ? orderDate : null, closesOn);
   await api.storage.local.set({ statuses: prune(statuses, orderId) });
   return true;
 }
 
-// A return/refund spotted in the orders list itself, before anything is sent.
+// An order found on Manage Returns or with a return/refund in its row.
 async function markReturn(msg) {
   const { orderId, detail, returnKind, orderDate, closesOn } = msg || {};
-  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId || '')) return false;
+  if (!ORDER_ID.test(orderId || '')) return false;
+  const job = await getJob();
+  if (job && job.orderId === orderId && isLive(job)) return false; // its own job decides
   const { statuses = {} } = await getStored(['statuses']);
   const prev = statuses[orderId] || {};
   if (FINAL.has(prev.status)) return false;
-  statuses[orderId] = buildRecord(prev, orderId, { status: 'skippedReturn', detail, returnKind }, isDay(orderDate) ? orderDate : null, false, closesOn);
+  statuses[orderId] = buildRecord(prev, { status: 'skippedReturn', detail, returnKind }, isDay(orderDate) ? orderDate : null, closesOn);
   await api.storage.local.set({ statuses: prune(statuses, orderId) });
   return true;
 }
@@ -317,10 +320,20 @@ async function abort(orderId) {
 
 // Drop a job that hasn't sent anything, without recording a result
 // (used when an order is switched to a different method).
-async function cancel(sender, orderId) {
+async function cancel(sender, msg) {
+  const { orderId, jobId } = msg || {};
   const job = await getJob();
-  if (!job || job.orderId !== orderId || job.stage === 'clickedYes' || !isActor(job, sender)) return false;
+  if (!job || job.orderId !== orderId || job.stage === 'clickedYes' || !isActor(job, sender, jobId)) return false;
   await api.storage.local.remove('currentJob');
+  return true;
+}
+
+// The orders page (re)loaded in a tab: a job that page was running can't finish anymore.
+async function pageLoaded(sender) {
+  const job = await getJob();
+  if (!job || !PAGE_OWNED.has(job.mode) || !sender || !sender.tab || sender.frameId) return false;
+  if (sender.tab.id !== job.ownerTabId) return false;
+  await endAbandoned(job, 'The page was reloaded');
   return true;
 }
 
@@ -328,7 +341,7 @@ async function tabClosed(tabId) {
   const job = await getJob();
   if (!job) return;
   if (PAGE_OWNED.has(job.mode)) {
-    if (tabId === job.ownerTabId) await finishJob(job, failureFor(job, 'The orders tab was closed'));
+    if (tabId === job.ownerTabId) await endAbandoned(job, 'The orders tab was closed');
     return;
   }
   if (!job.tabIds.includes(tabId)) return;
@@ -337,34 +350,20 @@ async function tabClosed(tabId) {
   else await saveJob(job);
 }
 
-async function clearResults() {
-  if (await getJob()) return { ok: false, reason: 'busy' };
-  await api.storage.local.remove('statuses');
-  return { ok: true };
-}
-
-// Repair results saved by earlier versions:
-// - v0.3 wrongly closed orders that a check had called "eligible" (Amazon shows
-//   Yes even for orders outside its window; it only says "not eligible" after Yes).
-// - "eligible" results from the old check-only mode meant nothing; forget them.
+// Tidy results saved by earlier versions: guesses that were never Amazon's answer
+// ("greyed", unconfirmed "eligible") and fields no longer used.
 async function migrate() {
   const { statuses } = await getStored(['statuses']);
+  await api.storage.local.remove('today');
   if (!statuses) return;
-  let changed = false;
   for (const [id, rec] of Object.entries(statuses)) {
-    if (!rec) continue;
-    if (rec.status === 'closed' && /^It was eligible on/.test(rec.detail || '')) {
-      statuses[id] = { ...rec, status: 'notEligible', checkedDay: '', detail: 'Outside Amazon\'s 5–30 day window', seenEligible: undefined, eligibleDay: undefined };
-      changed = true;
-    } else if (rec.status === 'greyed' || (rec.status === 'eligible' && !rec.verifiedDay)) {
-      // Old check-only results and 0.8.2's greyed-button guesses: not reliable, forget them.
+    if (!rec || rec.status === 'greyed' || (rec.status === 'eligible' && !rec.verifiedDay)) {
       delete statuses[id];
-      changed = true;
+      continue;
     }
+    for (const k of ['mode', 'lastNote', 'checkFailedDay', 'checkNote', 'checkFatal', 'seenEligible', 'eligibleDay']) delete rec[k];
   }
-  const before = Object.keys(statuses).length;
-  prune(statuses);
-  if (changed || Object.keys(statuses).length !== before) await api.storage.local.set({ statuses });
+  await api.storage.local.set({ statuses: prune(statuses) });
 }
 serial(migrate);
 
@@ -388,9 +387,9 @@ function handle(msg, sender) {
     case 'hello':
       return serial(() => hello(sender));
     case 'stage':
-      return serial(() => setStage(sender, msg.stage, msg.note));
+      return serial(() => setStage(sender, msg));
     case 'jobResult':
-      return serial(() => report(sender, msg.result));
+      return serial(() => report(sender, msg));
     case 'checked':
       return serial(() => recordCheck(msg));
     case 'markReturn':
@@ -398,9 +397,9 @@ function handle(msg, sender) {
     case 'abortJob':
       return serial(() => abort(msg.orderId));
     case 'cancelJob':
-      return serial(() => cancel(sender, msg.orderId));
-    case 'clearResults':
-      return serial(() => clearResults());
+      return serial(() => cancel(sender, msg));
+    case 'pageLoaded':
+      return serial(() => pageLoaded(sender));
     default:
       return undefined;
   }

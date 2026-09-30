@@ -46,7 +46,8 @@ Most review tools ask you to connect your seller account to their servers, pay a
 |---|---|
 | **One button** | Adds **Request Reviews** to Amazon's own toolbar on Manage Orders. One click handles every eligible order. |
 | **Amazon's own request** | Sends exactly what Amazon's *Request a Review → Yes* sends. No custom messages, no emails, no templates. |
-| **The 5–30 day window** | Amazon only allows requests 5 to 30 days after delivery. Each order shows when its window opens, and orders are picked up once they're ready. |
+| **Asks Amazon first** | Before anything is sent, each order is checked with Amazon (read-only), so labels show what Amazon says: ready, already requested, or not open yet. Nothing is sent on a guess. |
+| **The 5–30 day window** | Amazon only allows requests 5 to 30 days after delivery. Each order shows when its window opens, and orders are picked up once Amazon opens them. |
 | **Skips returns and refunds** | Checks **Manage Returns** (seller-fulfilled and FBA) and the orders page first. Orders with a return (requested, pending, approved or completed) or a refund are skipped. |
 | **Every page** | Works through Amazon's pages of 100 orders on its own and stops once it reaches orders past the 30-day window. |
 | **Tells you what's next** | Finishes with a short summary and the next day more orders open, e.g. *Next batch: Sep 29 (4 orders)*. |
@@ -54,15 +55,15 @@ Most review tools ask you to connect your seller account to their servers, pay a
 
 ## How it works
 
-**1. Every order gets a label.** Right under each order number, a small label shows where it stands.
+**1. Every order gets a label.** Right under each order number, a small label shows where it stands, from Amazon's own answer.
 
 <img src="docs/images/orders-page-pills.png" alt="Manage Orders page with a label under each order: Opens ~Oct 4, Request review, Refunded · skipped" width="100%">
 
-**2. Click Request Reviews.** It first reads your Manage Returns list and skips every order on it.
+**2. Returns are skipped.** Your Manage Returns and FBA returns lists are read as the page opens, and every order on them is marked and never sent.
 
 <img src="docs/images/returns-check.png" alt="The Manage Returns list is read and a matching order is marked Returned · skipped" width="100%">
 
-**3. It requests a review for each eligible order, one at a time, with a short pause between each.** When a page is done, it opens the next one.
+**3. Click Request Reviews.** It checks any order not yet confirmed today with Amazon, then requests a review for each one Amazon accepts, one at a time with a short pause between each. When a page is done, it opens the next one.
 
 <img src="docs/images/sending-page-2.png" alt="Page 2 of the orders list while ReviewNudge sends, with Sent labels" width="100%">
 
@@ -74,15 +75,16 @@ Most review tools ask you to connect your seller account to their servers, pay a
 
 | Label | Meaning |
 |---|---|
-| **Request review** | Amazon accepts a request now. Tap it to send just that order. |
-| **Opens ~Oct 4** | Not eligible yet. The date is estimated from the order's delivery date + 5 days. |
+| **Request review** | Ready: Amazon accepts a request now. Tap it to send just that order. |
+| **Opens ~Oct 4** / **Not eligible yet** | Amazon's window isn't open yet. The date is estimated from the order's delivery date + 5 days; Amazon is asked again each day. |
 | **Sent ✓** | Amazon accepted the request. |
+| **Already requested** | Amazon says a request already exists: sent by you, earlier, or outside ReviewNudge. |
 | **↩ Returned · skipped** / **↩ Refunded · skipped** | Never sent. |
-| **Already requested** | Amazon says a request already exists, sent by you, earlier, or outside ReviewNudge. |
 | **⊘ Past 30 days** | Amazon's window has closed for this order. |
-| **Error – tap** / **Needs a look** | A request really failed, or its result couldn't be confirmed. Tap for the reason. |
+| **Needs a look** | Yes was pressed but Amazon's answer wasn't seen. ReviewNudge asks Amazon again and updates it; it's never re-sent on its own. |
+| **Error – tap** | A request really failed today. Tap for the reason and to try again. |
 
-There are no settings and no menus. Tapping any label explains it.
+There are no settings and no menus. Tapping any label explains it. Hover over the button to see the last run's summary.
 
 ## Watch the 1-minute overview
 
@@ -103,7 +105,7 @@ ReviewNudge was built with sensitive seller data in mind:
 - **Stores very little, only on your computer:** each order's result (for example "sent" on a date), so labels survive a page reload. Each record is deleted automatically a day after that order's review window closes.
 - **Collects nothing.** No analytics, no tracking, no third parties. Firefox's store listing declares "no data collected".
 - **Two permissions only:** access to `sellercentral.amazon.com`, and local storage.
-- **Open source.** Every line is in [`background.js`](background.js) and [`content/`](content/), about 2,000 lines of plain JavaScript with no libraries.
+- **Open source.** Every line is in [`background.js`](background.js) and [`content/`](content/), about 2,900 lines of plain JavaScript with no libraries.
 
 Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
@@ -118,7 +120,7 @@ Hold **Option** (Alt on Windows) and click **Request Reviews**. Instead of a run
 
 It starts by reading Manage Returns and Manage FBA returns fresh and says whether each list could be read, how it was read, and how many returns it holds.
 
-It's **read-only**: it doesn't send a request, click anything, or change anything. The text stays in your browser until you close the panel. Use its **Copy** button only if you want to share it, for example in a bug report. Order numbers do appear in it.
+It sends **no review request** and changes nothing in Seller Central. (To read the returns lists it uses their page-size, filter and Next controls in an invisible copy of the page, as a run does, and Amazon's fresh answers also refresh ReviewNudge's own labels.) The text stays in your browser until you close the panel, which also stops it. Use its **Copy** button only if you want to share it, for example in a bug report. Order numbers do appear in it.
 
 ## How ReviewNudge is different
 
@@ -128,11 +130,11 @@ It's **read-only**: it doesn't send a request, click anything, or change anythin
 | What it sends | Amazon's own *Request a Review* | Amazon's request or their own emails | Amazon's request |
 | Pace | One order at a time, with a 3–6 second pause | Varies | As fast as possible |
 | Skips returns and refunds | Yes | Sometimes, often a paid option | Usually not |
-| Follows the 5–30 day window | Yes, with the date each order opens | Yes | Often relies on Amazon rejecting |
+| Follows the 5–30 day window | Yes: asks Amazon about each order first, and shows the date each one opens | Yes | Often relies on Amazon rejecting |
 | Cost | Free | Monthly subscription | Free |
 | Your data | Stays on your computer | Stored by the service | Stays local |
 
-**Paced like a person.** ReviewNudge sends one request at a time with a short, varied pause between orders, the same requests you'd make clicking the button yourself. It stops on its own if Amazon shows a CAPTCHA or sign-in page, or after two errors in a row. No tool can promise how Amazon treats automation, but ReviewNudge is built to stay well inside normal use: it never floods Amazon with requests, and it never uses Amazon's seller API or any hidden data feed.
+**Paced like a person.** ReviewNudge sends one request at a time with a short, varied pause between orders, the same requests you'd make clicking the button yourself. Before sending, it asks Amazon about each order with the same small, read-only check Amazon's own Request a Review page makes, a fraction of a second apart. It stops on its own if Amazon shows a CAPTCHA or sign-in page, or after two errors in a row. No tool can promise how Amazon treats automation, but ReviewNudge is built to stay well inside normal use: it never floods Amazon with requests, and it never uses Amazon's seller API or any hidden data feed.
 
 **Asks only where a request makes sense.** A buyer in the middle of a return or refund has no reason to get a "please review" message, so ReviewNudge skips them. Everyone else in Amazon's window gets Amazon's standard, neutral request. ReviewNudge can't and doesn't ask for positive reviews.
 
@@ -203,13 +205,13 @@ flowchart LR
   UI <--> PG
   UI <--> BG
   BG <--> ST
-  UI -- "same requests as your clicks" --> SC
+  UI -- "same requests as your clicks<br>+ read-only lookups" --> SC
   PG -- "Manage Returns · order pages" --> SC
 ```
 
 - **`background.js`** keeps one job at a time and records each order's result. Every piece of state is saved to storage, so the browser can pause it at any time without losing anything.
-- **`content/orders-page.js`** adds the button and labels, estimates each order's window, reads Manage Returns, sends the requests and moves through pages.
-- **`content/amazon-pages.js`** reads Amazon's own pages (Manage Returns, and the Request a Review page when a fallback is needed).
+- **`content/orders-page.js`** adds the button and labels, asks Amazon about each order, reads the returns lists, sends the requests and moves through pages.
+- **`content/amazon-pages.js`** reads Amazon's own pages (Manage Returns, Manage FBA returns, and the Request a Review page when a fallback is needed).
 - **One manifest for three browsers:** `background` lists both `service_worker` (Chrome, Safari) and `scripts` (Firefox); Firefox-only settings live under `browser_specific_settings`, and each browser ignores what it doesn't use.
 
 The full technical walkthrough, including how dates are estimated, how returns are matched, and every fallback, is in **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)**.
@@ -231,7 +233,7 @@ On purpose. A short, varied pause keeps it at a human pace. Around 1,000 orders 
 <details>
 <summary><b>What if Manage Returns can't be read?</b></summary>
 
-Skipping returns is best effort. If Manage Returns can't be read, ReviewNudge still skips orders the orders page marks as refunded, sends to the rest, and says so in the summary.
+Skipping returns is best effort. If Manage Returns or Manage FBA returns can't be read in full, ReviewNudge still skips every return it could read and every order the orders page marks as returned or refunded, sends to the rest, and says so in the summary. A CAPTCHA or sign-in page stops it instead.
 </details>
 
 <details>
@@ -243,7 +245,13 @@ Yes. After the seller-fulfilled list, ReviewNudge opens **Manage FBA returns** (
 <details>
 <summary><b>Can I send to just one order?</b></summary>
 
-Yes. Tap **Request review** under that order.
+Yes. Tap **Request review** under that order. Amazon is asked first, as in a full run.
+</details>
+
+<details>
+<summary><b>Why do some labels change a few seconds after the page loads?</b></summary>
+
+When Manage Orders opens, ReviewNudge reads your returns lists and asks Amazon about each order it hasn't confirmed today, then updates the labels with Amazon's answers. After the first visit of the day, labels come straight from what Amazon said earlier that day.
 </details>
 
 ## Development

@@ -30,8 +30,8 @@
     'button, a, [role="button"], [role="link"], [role="menuitem"], kat-button, kat-link, input[type="button"], input[type="submit"]';
   const INTERACTIVE =
     'button, a, select, option, [role="button"], [role="link"], [role="menu"], [role="menuitem"], [role="navigation"], nav, kat-button, kat-link, kat-dropdown, kat-menu';
-  const SKIP_TEXT = 'script, style, noscript, template, #nudge-panel, #nudge-pop, [data-nudge-ui], [data-nudge-id]';
-  const OUR_UI = '#nudge-panel, #nudge-pop, [data-nudge-ui], [data-nudge-id]';
+  const SKIP_TEXT = 'script, style, noscript, template, #nudge-pop, #nudge-toast, [data-nudge-ui], [data-nudge-id]';
+  const OUR_UI = '#nudge-pop, #nudge-toast, [data-nudge-ui], [data-nudge-id]';
   const KAT_TEXT_ATTRS = ['header', 'description', 'label', 'text', 'title', 'message'];
 
   const REQUEST_LABEL = /^request (?:a )?review$/i;
@@ -208,8 +208,10 @@
   }
 
   // ---------- one order ----------
-  // io = { frame, doc(), url(), navigate(url) → 'continue' | 'handoff' | 'blocked', setStage(stage, note) → bool, report(result) }
+  // io = { frame, doc(), url(), navigate(url) → 'continue' | 'handoff' | 'blocked',
+  //        setStage(stage, note) → bool, report(result), dead() → bool }
   // Returns 'blocked' if the page couldn't be loaded invisibly (nothing reported), otherwise undefined.
+  // Once io.dead() is true (the orders page gave up on this order) it stops without reporting.
   async function drive(job, io) {
     let stage = job.stage;
     let stageStart = Date.now();
@@ -223,6 +225,7 @@
       io.report({ status: 'error', fatal: true, detail: 'Lost contact with the extension. Nothing was sent.' });
 
     for (;;) {
+      if (io.dead && io.dead()) return undefined;
       const doc = io.doc();
       if (!doc || !doc.body) {
         if (Date.now() - stageStart > STAGE_TIMEOUT_MS) {
@@ -253,7 +256,7 @@
         if (ret) return io.report({ status: 'skippedReturn', detail: `Order page says "${ret}".`, returnKind: returnKindOf(ret) });
         if (req && req.visible && isDisabled(req.el)) greyed = true;
 
-        if (!greyed && !io.frame && req && !req.href && req.visible && !job.dryRun) {
+        if (!greyed && !io.frame && req && !req.href && req.visible) {
           // A script button (no link) in a tab: click it, the way you would.
           if (!(await io.setStage('confirmPage'))) return lostContact();
           stage = 'confirmPage';
@@ -284,12 +287,6 @@
         const yes = findButton(doc, YES_LABEL);
         const canYes = !!yes && !isDisabled(yes);
         if (canYes && /review/i.test(text)) {
-          if (job.dryRun) {
-            return io.report({
-              status: 'eligible',
-              detail: "Amazon's review page offered Yes/No, so this order is eligible. Check-only run stopped before Yes.",
-            });
-          }
           await sleep(rand(STEP_DELAY_MIN_MS, STEP_DELAY_MAX_MS));
           const yes2 = findButton(io.doc() || doc, YES_LABEL);
           if (!yes2 || isDisabled(yes2)) continue;
@@ -311,12 +308,9 @@
           if (!neg) negSeen = 0;
         }
         if (Date.now() - stageStart > STAGE_TIMEOUT_MS) {
-          if (greyed) {
-            return io.report({ status: 'notEligible', detail: "Amazon's Request a Review button is greyed out for this order." });
-          }
           return io.report({
             status: 'error',
-            detail: "Amazon's Request a Review page didn't show a Yes button or an eligibility message.",
+            detail: `Amazon's Request a Review page didn't show a Yes button or an answer.${greyed ? " (The order page's Request a Review button was greyed out.)" : ''} Nothing was sent.`,
           });
         }
       }
@@ -368,7 +362,9 @@
         break;
       }
     }
-    const ids = text.match(ORDER_ID_G) || [];
+    // Each order counts once per page, however often its number appears (links,
+    // labels, attributes), so a row is never counted twice.
+    const ids = [...new Set(text.match(ORDER_ID_G) || [])];
     if (total === null && !ids.length && EMPTY_LIST.test(text)) total = 0; // an empty list is a complete read
     return { text, total, ids, sig: `${total}#${ids.join(',')}` };
   }
@@ -410,8 +406,9 @@
     }
   }
 
-  // Reads every page of the returns list. { ok, ids } or { ok: false, why }.
-  // Only succeeds if it read at least as many rows as the page's own total.
+  // Reads every page of the returns list. { ok, ids } or { ok: false, why, ids }
+  // (ids = what could be read, still worth skipping). Only succeeds if it read at
+  // least as many orders as the page's own total.
   async function readReturns(io) {
     let page = await stableReturns(io, null, RETURNS_LOAD_MS);
     if (page.fail) return { ok: false, why: page.fail, blocked: !!page.blocked, snippet: page.snippet };
@@ -441,33 +438,36 @@
       rows += page.ids.length;
       if (rows >= total) return { ok: true, ids: [...found], total };
       const next = findButton(io.doc(), /^next(?: page)?$/i);
-      if (!next || isDisabled(next)) return { ok: false, why: `read ${rows} of ${total} returns` };
+      if (!next || isDisabled(next)) return { ok: false, why: `read ${rows} of ${total} returns`, ids: [...found] };
       clickEl(next);
       const after = await stableReturns(io, page.sig, RETURNS_PAGE_MS);
-      if (after.fail) return { ok: false, why: `${after.fail} (read ${rows} of ${total})`, blocked: !!after.blocked };
+      if (after.fail) return { ok: false, why: `${after.fail} (read ${rows} of ${total})`, blocked: !!after.blocked, ids: [...found] };
       page = after;
     }
-    return { ok: false, why: 'too many pages of returns' };
+    return { ok: false, why: 'too many pages of returns', ids: [...found] };
   }
 
   // From a (seller-fulfilled) Manage Returns page, open the FBA returns list and
-  // read it too. { ok, ids } · { ok: false, missing: true } when this account
-  // shows no FBA returns page · { ok: false, why, blocked? }.
+  // read it too. { ok, ids } · { ok: false, missing: true } when the page offers
+  // no way to FBA returns at all · { ok: false, why, blocked? } otherwise.
   async function readFbaReturns(io) {
     const find = () =>
       deepAll(io.doc(), `${CLICKABLE}, [role="option"], kat-option`).find((e) => !inOurUi(e) && FBA_ENTRY.test(labelOf(e)) && isVisible(e)) || null;
+    const onFbaPage = () => FBA_PAGE.test(pageText(io.doc(), false));
     // A plain <select> switch between seller-fulfilled and FBA.
+    let switched = false;
     for (const sel of deepAll(io.doc(), 'select')) {
       const opt = [...sel.options].find((o) => FBA_ENTRY.test(o.text.trim()));
       if (opt && !inOurUi(sel)) {
         const Ev = (sel.ownerDocument.defaultView || window).Event;
         sel.value = opt.value;
         sel.dispatchEvent(new Ev('change', { bubbles: true }));
+        switched = true;
         break;
       }
     }
-    let entry = FBA_PAGE.test(pageText(io.doc(), false)) ? null : find();
-    if (!entry) {
+    let entry = switched || onFbaPage() ? null : find();
+    if (!entry && !switched && !onFbaPage()) {
       const menu = findButton(io.doc(), SELLER_FULFILLED_MENU); // new layout: a "Seller fulfilled ▾" switch
       if (menu) {
         clickEl(menu);
@@ -475,13 +475,12 @@
         entry = find();
       }
     }
-    if (!entry) {
-      await sleep(POLL_MS * 2);
-      if (!FBA_PAGE.test(pageText(io.doc(), false))) return { ok: false, missing: true };
-    }
+    // Nothing leads to FBA returns: this account has none. (A switch that was
+    // found but loads slowly is waited for below, and is never taken as "none".)
+    if (!entry && !switched && !onFbaPage()) return { ok: false, missing: true };
     const href = entry && sameOriginHref(entry, io.url());
     if (!entry) {
-      /* already switched by the <select> above */
+      /* already switched by the <select> above, or already on the FBA page */
     } else if (href) {
       if ((await io.navigate(href)) === 'blocked') return { ok: false, why: "the FBA returns page couldn't be opened" };
     } else {
@@ -558,7 +557,13 @@
   };
 
   // ---------- background-tab method: start automatically in a tab the extension opened ----------
-  const send = (msg) => Promise.resolve(api.runtime.sendMessage(msg)).catch(() => null);
+  const send = (msg) => {
+    try {
+      return Promise.resolve(api.runtime.sendMessage(msg)).catch(() => null);
+    } catch (e) {
+      return Promise.resolve(null); // the extension was reloaded or updated
+    }
+  };
 
   function navigate(url) {
     location.assign(url);
@@ -571,7 +576,7 @@
     } catch (e) {
       return;
     }
-    if (!stored || !stored.currentJob || stored.currentJob.mode === 'frame') return; // nothing for this tab
+    if (!stored || !stored.currentJob || stored.currentJob.mode !== 'tab') return; // only tabs the background opened
     for (let i = 0; i < HELLO_TRIES; i++) {
       const job = await send({ type: 'hello' });
       if (job) {
@@ -583,8 +588,8 @@
             navigate(u);
             return 'handoff';
           },
-          setStage: async (stage, note) => (await send({ type: 'stage', stage, note })) === true,
-          report: (result) => send({ type: 'jobResult', result }),
+          setStage: async (stage, note) => (await send({ type: 'stage', stage, note, jobId: job.jobId })) === true,
+          report: (result) => send({ type: 'jobResult', result, jobId: job.jobId }),
         });
       }
       await sleep(HELLO_RETRY_MS);
