@@ -331,6 +331,16 @@
     return { rows: [...rows.values()], hasAmazonRequestButton, toolbar };
   }
 
+  // The Canceled tab/filter of Manage Orders is selected: ReviewNudge stays out of it.
+  function onCanceledTab() {
+    if (/cancell?ed/i.test(location.search + location.hash)) return true;
+    for (const e of document.querySelectorAll('[role="tab"], kat-tab, kat-tab-item, kat-tab-pill')) {
+      const on = e.getAttribute('aria-selected') === 'true' || e.hasAttribute('selected') || e.getAttribute('aria-current') === 'true' || e.getAttribute('active') === 'true' || /\b(?:selected|active)\b/i.test(e.getAttribute('class') || '');
+      if (on && /^cancell?ed\b/.test(labelOf(e).toLowerCase())) return true;
+    }
+    return false;
+  }
+
   function isListPage() {
     const p = (location.pathname + location.hash).toLowerCase();
     if (!p.includes('order')) return false;
@@ -656,6 +666,10 @@
     try {
       const onList = isListPage();
       const found = onList ? scanPage() : { rows: [], hasAmazonRequestButton: false, toolbar: {} };
+      if (onList && !busy && onCanceledTab()) {
+        removeOurUi();
+        return;
+      }
       if (!onList || found.hasAmazonRequestButton || (!found.rows.length && !busy)) {
         if (!busy) removeOurUi();
         return;

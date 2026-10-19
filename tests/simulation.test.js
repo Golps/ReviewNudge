@@ -711,6 +711,20 @@ async function main() {
     check('B3 tapping it only explains; nothing sent', popTitle(w) === 'Refunded – skipped' && !(env.posts || {})[id(4)], popTitle(w));
   }
 
+  // B3c: the Canceled tab shows no ReviewNudge UI at all
+  {
+    const env = new Env(new Site({ [id(42)]: { age: 12, amazon: 'eligible' } }), { store: S4() });
+    const w = await ready(env, env.openList(), 1);
+    const tab = w.document.createElement('div');
+    tab.innerHTML = '<div role="tab" aria-selected="false">All</div><div role="tab" aria-selected="true">Canceled (3)</div>';
+    w.document.body.appendChild(tab);
+    await waitFor(() => !w.document.querySelector('#nudge-launcher'), 6000, 'ui removed').catch(() => {});
+    check('B3c Canceled tab selected → no button, no labels', !w.document.querySelector('#nudge-launcher') && !w.document.querySelector('[data-nudge-ui]'), 'UI still present');
+    tab.innerHTML = '<div role="tab" aria-selected="true">All</div><div role="tab" aria-selected="false">Canceled (3)</div>';
+    await waitFor(() => w.document.querySelector('#nudge-launcher'), 6000, 'ui back').catch(() => {});
+    check('B3c back on All → the button returns', !!w.document.querySelector('#nudge-launcher'));
+  }
+
   // B4: return found on the order page → Returned · skipped
   {
     const site4 = new Site({ [id(6)]: { age: 12, amazon: 'eligible' } });
@@ -1138,7 +1152,9 @@ async function main() {
     for (let i = 611; i <= 616; i++) orders[id(i)] = { age: 12, amazon: i === 611 ? 'already' : 'eligible' };
     const env = new Env(new Site(orders), { store: S4() });
     const w = await ready(env, env.openList(), 6);
-    await sleep(4000);
+    const lookups = () => Object.values(env.gets || {}).reduce((a, b) => a + b, 0);
+    await waitFor(() => lookups() >= 5, 12000, 'five lookups').catch(() => {});
+    await sleep(1500); // a sixth would show up here
     check('V11 unclear replies change nothing and nothing turns red', Object.keys(orders).every((k) => label(w, k) === 'Request review'), Object.keys(orders).map((k) => label(w, k)).join(' | '));
     check('V11 gives up after 5 unreadable replies', Object.values(env.gets || {}).reduce((a, b) => a + b, 0) === 5, JSON.stringify(env.gets));
     const end = await sendAll(w);
