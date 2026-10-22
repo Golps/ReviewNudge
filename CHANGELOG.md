@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- ReviewNudge stays out of Manage Orders' Canceled tab: it does not add a button or order labels there, and removes its UI when that tab is selected.
+
 ## 1.0.0
 
 First stable release. Checked on a real seller account: 100 of 100 labels matched Amazon's own answer, Manage Returns and Manage FBA returns were read correctly, and requests went through.
