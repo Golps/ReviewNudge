@@ -665,11 +665,11 @@
     scanning = true;
     try {
       const onList = isListPage();
-      const found = onList ? scanPage() : { rows: [], hasAmazonRequestButton: false, toolbar: {} };
-      if (onList && !busy && onCanceledTab()) {
+      if (onList && onCanceledTab()) {
         removeOurUi();
         return;
       }
+      const found = onList ? scanPage() : { rows: [], hasAmazonRequestButton: false, toolbar: {} };
       if (!onList || found.hasAmazonRequestButton || (!found.rows.length && !busy)) {
         if (!busy) removeOurUi();
         return;
