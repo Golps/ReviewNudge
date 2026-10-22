@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Check the selected Manage Orders tab before reading order rows. ReviewNudge stays off the Canceled tab and removes its UI there.
+
 ## 1.0.1
 
 - ReviewNudge stays out of Manage Orders' Canceled tab: it does not add a button or order labels there, and removes its UI when that tab is selected.
